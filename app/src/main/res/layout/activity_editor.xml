@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#E0E0E0">
+
+    <TextView 
+        android:id="@+id/txtFilename" 
+        android:layout_width="match_parent" 
+        android:layout_height="wrap_content" 
+        android:padding="8dp" 
+        android:text="Fichier..."
+        android:textColor="#000000"
+        android:textSize="16sp"
+        android:textStyle="bold"/>
+
+    <TextView
+        android:id="@+id/txtDuration"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="end"
+        android:paddingEnd="16dp"
+        android:text="00:00"
+        android:textColor="#555555"
+        android:textSize="14sp"/>
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1">
+
+        <com.podcastcreateur.app.WaveformView
+            android:id="@+id/waveformView"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="#DDDDDD"/>
+
+        <ProgressBar
+            android:id="@+id/progressBar"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center"
+            android:visibility="gone"/>
+    </FrameLayout>
+
+    <!-- Barre d'outils -->
+    <LinearLayout 
+        android:layout_width="match_parent" 
+        android:layout_height="wrap_content" 
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center"
+        android:background="#37474F">
+
+        <!-- Suppression des Tints pour voir vos icones originales -->
+        <ImageButton 
+            android:id="@+id/btnPlay" 
+            android:layout_width="50dp" 
+            android:layout_height="50dp" 
+            android:src="@drawable/ic_play"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="10dp"/>
+
+        <Space android:layout_width="16dp" android:layout_height="wrap_content"/>
+
+        <ImageButton 
+            android:id="@+id/btnCut" 
+            android:layout_width="50dp" 
+            android:layout_height="50dp" 
+            android:src="@drawable/ic_cut"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="10dp"/>
+
+        <Space android:layout_width="16dp" android:layout_height="wrap_content"/>
+
+        <ImageButton 
+            android:id="@+id/btnNormalize" 
+            android:layout_width="50dp" 
+            android:layout_height="50dp" 
+            android:src="@drawable/ic_normalize"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="10dp"/>
+
+        <Space android:layout_width="16dp" android:layout_height="wrap_content"/>
+
+        <ImageButton 
+            android:id="@+id/btnSave" 
+            android:layout_width="50dp" 
+            android:layout_height="50dp" 
+            android:src="@drawable/ic_save"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="10dp"/>
+            
+    </LinearLayout>
+</LinearLayout>

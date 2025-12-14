@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="#E0E0E0">
+
+    
+    <!-- Header -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#37474F"
+        android:padding="16dp"
+        android:orientation="vertical">
+        
+        <TextView
+            android:id="@+id/txtProjectTitle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Émission"
+            android:textColor="#FFF"
+            android:textSize="20sp"
+            android:textStyle="bold"/>
+    </LinearLayout>
+
+    <!-- Toolbar Actions -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:gravity="center_vertical">
+
+        <!-- Bouton Enregistrer (Rond rouge) -->
+        <ImageButton
+            android:id="@+id/btnRecordNew"
+            android:layout_width="60dp"
+            android:layout_height="60dp"
+            android:src="@drawable/ic_record"
+            android:background="?selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="5dp"
+            android:layout_marginEnd="15dp"
+            android:contentDescription="Enregistrer"/>
+
+        <!-- Bouton Importer (Dossier) -->
+        <ImageButton
+            android:id="@+id/btnImportFile"
+            android:layout_width="50dp"
+            android:layout_height="50dp"
+            android:src="@drawable/ic_open_folder"
+            android:background="?selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="8dp"
+            android:layout_marginEnd="15dp"
+            android:contentDescription="Importer"/>
+            
+        <Space 
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"/>
+
+        <Button
+            android:id="@+id/btnMergeProject"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="EXPORTER"
+            android:textColor="#FFF"
+            android:backgroundTint="#388E3C"/>
+    </LinearLayout>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Maintenez appuyé pour déplacer l'ordre"
+        android:gravity="center"
+        android:textSize="12sp"
+        android:textColor="#757575"
+        android:paddingBottom="4dp"/>
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/recyclerViewClips"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:padding="8dp"
+        android:clipToPadding="false"/>
+
+    
+
+</LinearLayout>
