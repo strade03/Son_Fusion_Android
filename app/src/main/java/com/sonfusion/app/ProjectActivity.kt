@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
 import android.provider.OpenableColumns
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
@@ -14,7 +15,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.arthenica.ffmpegkit.FFmpegKit // Import FFmpeg
+// Imports FFmpeg (Nécessite que l'étape 1 et 2 soient OK)
+import com.arthenica.ffmpegkit.FFmpegKit
 import com.arthenica.ffmpegkit.ReturnCode
 import com.podcastcreateur.app.databinding.ActivityProjectBinding
 import java.io.File
@@ -26,12 +28,12 @@ import java.util.Locale
 
 class ProjectActivity : AppCompatActivity() {
 
-    // ... (Le début de la classe reste inchangé jusqu'à importFileToProject) ...
     private lateinit var binding: ActivityProjectBinding
     private lateinit var projectDir: File
     private val audioFiles = ArrayList<File>()
     private lateinit var adapter: AudioClipAdapter
 
+    // Gestionnaire pour l'import de fichier (Audio uniquement)
     private val importFileLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) {
             importFileToProject(uri)
@@ -58,7 +60,7 @@ class ProjectActivity : AppCompatActivity() {
         }
 
         binding.btnImportFile.setOnClickListener {
-            // On autorise audio/* (mp3, m4a, wav, etc.)
+            // Ouvre le sélecteur pour tous les fichiers audio (mp3, wav, m4a...)
             importFileLauncher.launch("audio/*")
         }
 
@@ -69,16 +71,16 @@ class ProjectActivity : AppCompatActivity() {
         super.onResume()
         refreshList()
     }
-    
-    // ... (setupRecycler, refreshList, saveOrderOnDisk restent inchangés) ...
 
     private fun setupRecycler() {
         adapter = AudioClipAdapter(audioFiles, this)
         binding.recyclerViewClips.layoutManager = LinearLayoutManager(this)
         binding.recyclerViewClips.adapter = adapter
 
+        // Setup Drag & Drop
         val itemTouchHelper = ItemTouchHelper(object : ItemTouchHelper.SimpleCallback(
             ItemTouchHelper.UP or ItemTouchHelper.DOWN, 0) {
+            
             override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
                 val fromPos = viewHolder.adapterPosition
                 val toPos = target.adapterPosition
@@ -86,7 +88,9 @@ class ProjectActivity : AppCompatActivity() {
                 adapter.notifyItemMoved(fromPos, toPos)
                 return true
             }
+
             override fun onSwiped(viewHolder: RecyclerView.ViewHolder, direction: Int) { }
+
             override fun clearView(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder) {
                 super.clearView(recyclerView, viewHolder)
                 saveOrderOnDisk()
@@ -97,9 +101,8 @@ class ProjectActivity : AppCompatActivity() {
 
     private fun refreshList() {
         audioFiles.clear()
-        val list = projectDir.listFiles { f -> 
-            f.name.endsWith(".wav") || f.name.endsWith(".mp3") 
-        }
+        // On ne cherche que les WAV maintenant, car tout import sera converti
+        val list = projectDir.listFiles { f -> f.name.endsWith(".wav") }
         list?.sortedBy { it.name }?.let { audioFiles.addAll(it) }
         adapter.notifyDataSetChanged()
     }
@@ -123,15 +126,13 @@ class ProjectActivity : AppCompatActivity() {
         adapter.notifyDataSetChanged()
     }
 
-    // --- MODIFICATION MAJEURE ICI ---
-
+    // --- IMPORTATION AVEC CONVERSION FFMPEG ---
     private fun importFileToProject(uri: Uri) {
-        // Afficher un petit loading car la conversion peut prendre 1 ou 2 secondes
-        Toast.makeText(this, "Traitement du fichier en cours...", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Conversion en cours...", Toast.LENGTH_SHORT).show()
 
         Thread {
             try {
-                // 1. Récupérer le nom original
+                // 1. Récupérer le nom du fichier source
                 var fileName = "import_" + System.currentTimeMillis()
                 contentResolver.query(uri, null, null, null, null)?.use { cursor ->
                     val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -140,60 +141,55 @@ class ProjectActivity : AppCompatActivity() {
                     }
                 }
 
-                // Nettoyage nom et forcer l'extension .wav (car on va convertir)
+                // Nettoyage nom + Force extension .wav
                 val baseName = fileName.substringBeforeLast('.')
                 val safeName = baseName.replace(Regex("[^a-zA-Z0-9 ._-]"), "") + ".wav"
-
-                // 2. Créer un fichier temporaire cache pour l'entrée (ex: temp.mp3)
-                val tempInputFile = File(cacheDir, "temp_import_source")
-                if (tempInputFile.exists()) tempInputFile.delete()
                 
+                // 2. Copier la source (MP3/M4A/etc) dans un fichier temporaire cache
+                val tempInput = File(cacheDir, "temp_import_src")
+                if (tempInput.exists()) tempInput.delete()
+
                 contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(tempInputFile).use { output ->
+                    FileOutputStream(tempInput).use { output ->
                         input.copyTo(output)
                     }
                 }
 
-                // 3. Définir le fichier de destination finale (999_nom.wav)
+                // 3. Fichier de destination (WAV standardisé)
                 val destFile = File(projectDir, "999_" + safeName)
 
-                // 4. Conversion avec FFmpeg
-                // -y : écraser si existe
-                // -i : entrée
-                // -ac 1 : Mono (important pour ton WaveformView)
-                // -ar 44100 : 44.1kHz (important pour ton Editor)
-                // -c:a pcm_s16le : Encodage WAV standard 16 bits
-                val command = "-y -i \"${tempInputFile.absolutePath}\" -ac 1 -ar 44100 -c:a pcm_s16le \"${destFile.absolutePath}\""
+                // 4. Commande FFmpeg : Convertir en WAV PCM 16bit, 44100Hz, Mono
+                // Cela rend le fichier compatible avec ton EditorActivity et WavUtils
+                val cmd = "-y -i \"${tempInput.absolutePath}\" -ac 1 -ar 44100 -c:a pcm_s16le \"${destFile.absolutePath}\""
                 
-                val session = FFmpegKit.execute(command)
+                val session = FFmpegKit.execute(cmd)
 
                 if (ReturnCode.isSuccess(session.returnCode)) {
                     // Succès
                     runOnUiThread {
                         refreshList()
                         saveOrderOnDisk()
-                        Toast.makeText(this, "Fichier importé et converti !", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(this, "Import réussi !", Toast.LENGTH_SHORT).show()
                     }
                 } else {
-                    // Échec FFmpeg
+                    // Échec
                     runOnUiThread {
-                        Toast.makeText(this, "Erreur conversion format", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this, "Échec de conversion (Format non supporté ?)", Toast.LENGTH_LONG).show()
                     }
                 }
-                
-                // Nettoyage cache
-                if (tempInputFile.exists()) tempInputFile.delete()
+
+                // Nettoyage
+                if (tempInput.exists()) tempInput.delete()
 
             } catch (e: Exception) {
                 e.printStackTrace()
                 runOnUiThread {
-                    Toast.makeText(this, "Erreur lors de l'import", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Erreur d'import", Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()
     }
-
-    // ... (Le reste : onEdit, onDuplicate, onMerge reste identique) ...
+    // ------------------------------------------
 
     fun onEdit(file: File) {
         val intent = Intent(this, EditorActivity::class.java)
@@ -206,21 +202,24 @@ class ProjectActivity : AppCompatActivity() {
         val dotIndex = fullName.lastIndexOf('.')
         val baseName = if (dotIndex != -1) fullName.substring(0, dotIndex) else fullName
         val ext = if (dotIndex != -1) fullName.substring(dotIndex) else ""
+
         var newBaseName = baseName
-        if (!newBaseName.contains("_copie")) {
-            newBaseName += "_copie"
-        }
+        if (!newBaseName.contains("_copie")) newBaseName += "_copie"
+
         var candidateName = newBaseName + ext
         var counter = 1
+        
         while (isNameTaken(candidateName)) {
             candidateName = "${newBaseName}_$counter$ext"
             counter++
         }
+
         val dest = File(projectDir, "999_" + candidateName)
         file.copyTo(dest)
+        
         refreshList()
         saveOrderOnDisk()
-        Toast.makeText(this, "Dupliqué : $candidateName", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "Dupliqué", Toast.LENGTH_SHORT).show()
     }
 
     private fun isNameTaken(logicalName: String): Boolean {
@@ -255,6 +254,7 @@ class ProjectActivity : AppCompatActivity() {
         val safeProjectName = projectDir.name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
         val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
         val timestamp = sdf.format(Date())
+
         val outputName = "${safeProjectName}_$timestamp.wav"
         val destFile = File(publicDir, outputName)
 
@@ -266,7 +266,7 @@ class ProjectActivity : AppCompatActivity() {
                 if (success) {
                     AlertDialog.Builder(this)
                         .setTitle("Fusion réussie !")
-                        .setMessage("Fichier sauvegardé dans :\nMusic/PodcastCreateur/\n$outputName")
+                        .setMessage("Sauvegardé dans Music/PodcastCreateur/\n$outputName")
                         .setPositiveButton("OK", null)
                         .show()
                 } else {
@@ -275,4 +275,33 @@ class ProjectActivity : AppCompatActivity() {
             }
         }.start()
     }
+}
+
+class AudioClipAdapter(
+    private val list: List<File>,
+    private val activity: ProjectActivity
+) : RecyclerView.Adapter<AudioClipAdapter.VH>() {
+
+    class VH(v: View) : RecyclerView.ViewHolder(v) {
+        val txtName: TextView = v.findViewById(R.id.txtClipName)
+        val btnEdit: ImageButton = v.findViewById(R.id.btnItemEdit)
+        val btnDup: ImageButton = v.findViewById(R.id.btnItemDuplicate)
+        val btnDel: ImageButton = v.findViewById(R.id.btnItemDelete)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        val v = LayoutInflater.from(parent.context).inflate(R.layout.item_audio_clip, parent, false)
+        return VH(v)
+    }
+
+    override fun onBindViewHolder(holder: VH, position: Int) {
+        val file = list[position]
+        holder.txtName.text = activity.getDisplayName(file)
+
+        holder.btnEdit.setOnClickListener { activity.onEdit(file) }
+        holder.btnDup.setOnClickListener { activity.onDuplicate(file) }
+        holder.btnDel.setOnClickListener { activity.onDelete(file) }
+    }
+
+    override fun getItemCount() = list.size
 }
