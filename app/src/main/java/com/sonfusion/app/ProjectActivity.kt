@@ -16,8 +16,8 @@ import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 // Imports FFmpeg (Nécessite que l'étape 1 et 2 soient OK)
-import com.arthenica.mobileffmpeg.FFmpeg
-import com.arthenica.mobileffmpeg.ReturnCode
+import com.antonkarpenko.ffmpegkit.FFmpegKit
+import com.antonkarpenko.ffmpegkit.ReturnCode
 import com.podcastcreateur.app.databinding.ActivityProjectBinding
 import java.io.File
 import java.io.FileOutputStream
@@ -162,7 +162,7 @@ class ProjectActivity : AppCompatActivity() {
                 // Cela rend le fichier compatible avec ton EditorActivity et WavUtils
                 val cmd = "-y -i \"${tempInput.absolutePath}\" -ac 1 -ar 44100 -c:a pcm_s16le \"${destFile.absolutePath}\""
                 
-                val session = FFmpeg.execute(cmd)
+                val session = FFmpegKit.execute(cmd)
 
                 if (ReturnCode.isSuccess(session.returnCode)) {
                     // Succès
