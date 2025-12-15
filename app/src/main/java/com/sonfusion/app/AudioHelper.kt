@@ -14,8 +14,8 @@ object AudioHelper {
     private const val BIT_RATE = 128000
 
     /**
-     * Décode le fichier et renvoie les données BRUTES avec leur fréquence d'origine.
-     * CORRECTION : Meilleure gestion de la fréquence d'échantillonnage
+     * Décode le fichier et renvoie les données MONO avec leur fréquence d'origine.
+     * CORRECTION : Gestion correcte du nombre de canaux (stéréo -> mono)
      */
     fun decodeToPCM(input: File): AudioContent {
         if (!input.exists()) return AudioContent(ShortArray(0), 44100)
@@ -46,11 +46,10 @@ object AudioHelper {
             return AudioContent(ShortArray(0), 44100)
         }
 
-        // CORRECTION : Récupération fiable de la fréquence d'échantillonnage
+        // Récupération de la fréquence d'échantillonnage
         val sourceSampleRate = try {
             format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
         } catch (e: Exception) {
-            // Si la clé n'existe pas, on essaie de l'extraire du format de sortie du décodeur
             44100
         }
 
@@ -67,8 +66,8 @@ object AudioHelper {
         val bufferInfo = MediaCodec.BufferInfo()
         val pcmData = java.io.ByteArrayOutputStream()
         
-        // CORRECTION : Variable pour capturer la vraie fréquence du décodeur
         var actualSampleRate = sourceSampleRate
+        var channelCount = 1  // NOUVEAU : On stocke le nombre de canaux
         
         try {
             var isEOS = false
@@ -92,13 +91,18 @@ object AudioHelper {
 
                 val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                 
-                // CORRECTION : Capturer le format de sortie réel du décodeur
+                // CORRECTION : Capturer le nombre de canaux ET la fréquence
                 if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val outputFormat = decoder.outputFormat
                     actualSampleRate = try {
                         outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
                     } catch (e: Exception) {
                         sourceSampleRate
+                    }
+                    channelCount = try {
+                        outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                    } catch (e: Exception) {
+                        1
                     }
                 }
                 
@@ -127,8 +131,27 @@ object AudioHelper {
         val shorts = ShortArray(bytes.size / 2)
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         
-        // Retourne le son avec la VRAIE fréquence détectée
-        return AudioContent(shorts, actualSampleRate)
+        // CORRECTION MAJEURE : Si c'est du stéréo, on convertit en mono
+        val monoShorts = if (channelCount == 2) {
+            convertStereoToMono(shorts)
+        } else {
+            shorts
+        }
+        
+        return AudioContent(monoShorts, actualSampleRate)
+    }
+
+    /**
+     * NOUVELLE FONCTION : Convertit stéréo en mono (moyenne des 2 canaux)
+     */
+    private fun convertStereoToMono(stereo: ShortArray): ShortArray {
+        val mono = ShortArray(stereo.size / 2)
+        for (i in mono.indices) {
+            val left = stereo[i * 2].toInt()
+            val right = stereo[i * 2 + 1].toInt()
+            mono[i] = ((left + right) / 2).toShort()
+        }
+        return mono
     }
 
     /**
