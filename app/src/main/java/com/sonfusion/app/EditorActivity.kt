@@ -6,6 +6,7 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Bundle
 import android.view.View
+import android.widget.HorizontalScrollView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -18,10 +19,10 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var binding: ActivityEditorBinding
     private lateinit var currentFile: File
     private var pcmData: ShortArray = ShortArray(0)
+    private var currentSampleRate = 44100 // Stockage de la fréquence détectée
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false
     
-    // Zoom
     private var zoomLevel = 1.0f
     private var screenWidth = 0
 
@@ -46,22 +47,16 @@ class EditorActivity : AppCompatActivity() {
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
         binding.btnSave.setOnClickListener { saveFile() }
         
-        // CORRECTION ZOOM : On utilise une méthode plus robuste pour redimensionner
-        binding.btnZoomIn.setOnClickListener { 
-            applyZoom(zoomLevel * 1.5f) 
-            Toast.makeText(this, "Zoom In", Toast.LENGTH_SHORT).show() 
-        }
-        binding.btnZoomOut.setOnClickListener { 
-            applyZoom(zoomLevel / 1.5f) 
-            Toast.makeText(this, "Zoom Out", Toast.LENGTH_SHORT).show()
-        }
+        // Zoom sans Toast
+        binding.btnZoomIn.setOnClickListener { applyZoom(zoomLevel * 1.5f) }
+        binding.btnZoomOut.setOnClickListener { applyZoom(zoomLevel / 1.5f) }
         
         binding.btnReRecord.setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle("Refaire l'enregistrement ?")
                 .setMessage("L'audio actuel sera remplacé.")
                 .setPositiveButton("Oui") { _, _ ->
-                    stopAudio() // Sécurité
+                    stopAudio()
                     val regex = Regex("^(\\d{3}_)(.*)\\.(.*)$")
                     val match = regex.find(currentFile.name)
                     if (match != null) {
@@ -82,26 +77,32 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun applyZoom(newZoom: Float) {
-        val clamped = newZoom.coerceIn(1.0f, 15.0f)
-        if (abs(clamped - zoomLevel) < 0.1f) return
+        val clamped = newZoom.coerceIn(1.0f, 20.0f) // Augmenter max zoom
+        if (abs(clamped - zoomLevel) < 0.05f) return
         
         zoomLevel = clamped
         
-        // On force la largeur de la vue Waveform
+        // Calcul nouvelle largeur
+        val newWidth = (screenWidth * zoomLevel).toInt()
+        
+        // On applique directement au layoutParams
         val params = binding.waveformView.layoutParams
-        params.width = (screenWidth * zoomLevel).toInt()
+        params.width = newWidth
         binding.waveformView.layoutParams = params
         
-        // Forcer le redessin
-        binding.waveformView.requestLayout()
+        // On force la vue à se redessiner
         binding.waveformView.invalidate()
+        binding.waveformView.requestLayout()
     }
 
     private fun loadWaveform() {
         Thread {
             try {
-                val data = AudioHelper.decodeToPCM(currentFile)
-                pcmData = data
+                // Utilisation de la nouvelle méthode qui renvoie data + sampleRate
+                val content = AudioHelper.decodeToPCM(currentFile)
+                pcmData = content.data
+                currentSampleRate = content.sampleRate // On stocke la fréquence réelle
+                
                 runOnUiThread {
                     binding.waveformView.setWaveform(pcmData)
                     binding.progressBar.visibility = View.GONE
@@ -114,7 +115,8 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun formatTime(samples: Int): String {
-        val sec = samples / 44100
+        if (currentSampleRate == 0) return "00:00"
+        val sec = samples / currentSampleRate // Utilisation fréquence réelle
         val m = sec / 60
         val s = sec % 60
         return String.format("%02d:%02d", m, s)
@@ -123,20 +125,26 @@ class EditorActivity : AppCompatActivity() {
     private fun playAudio() {
         if (pcmData.isEmpty()) return
         isPlaying = true
-        // ICÔNE STOP (carré) PENDANT LA LECTURE
-        binding.btnPlay.setImageResource(R.drawable.ic_stop_read) 
+        binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
 
         Thread {
-            val sampleRate = 44100
-            val minBuf = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            audioTrack = AudioTrack(AudioManager.STREAM_MUSIC, sampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf, AudioTrack.MODE_STREAM)
+            // Configuration AudioTrack avec la fréquence réelle du fichier
+            val minBuf = AudioTrack.getMinBufferSize(currentSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            audioTrack = AudioTrack(
+                AudioManager.STREAM_MUSIC, 
+                currentSampleRate, // ICI : 44100 ou 48000 selon le fichier
+                AudioFormat.CHANNEL_OUT_MONO, 
+                AudioFormat.ENCODING_PCM_16BIT, 
+                minBuf, 
+                AudioTrack.MODE_STREAM
+            )
 
             audioTrack?.play()
 
             var startIdx = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos
             startIdx = startIdx.coerceIn(0, pcmData.size)
 
-            val bufferSize = 2048
+            val bufferSize = 4096
             var offset = startIdx
             val endIdx = if (binding.waveformView.selectionEnd > startIdx) binding.waveformView.selectionEnd else pcmData.size
 
@@ -145,7 +153,8 @@ class EditorActivity : AppCompatActivity() {
                 audioTrack?.write(pcmData, offset, len)
                 offset += len
                 
-                if (offset % 8820 == 0) { 
+                // Mise à jour UI moins fréquente pour performance
+                if (offset % (currentSampleRate / 5) == 0) { 
                      runOnUiThread { 
                          binding.waveformView.playheadPos = offset
                          binding.waveformView.invalidate()
@@ -159,7 +168,6 @@ class EditorActivity : AppCompatActivity() {
             audioTrack = null
             isPlaying = false
             runOnUiThread { 
-                // RETOUR ICÔNE PLAY
                 binding.btnPlay.setImageResource(R.drawable.ic_play) 
                 if (offset >= endIdx) binding.waveformView.playheadPos = startIdx
                 binding.waveformView.invalidate()
@@ -170,10 +178,14 @@ class EditorActivity : AppCompatActivity() {
     private fun autoScroll(sampleIdx: Int) {
         val totalSamples = pcmData.size
         if (totalSamples == 0) return
-        val viewWidth = binding.waveformView.width
+        
+        // Largeur actuelle de la vue (qui peut être très grande si zoomée)
+        val viewWidth = binding.waveformView.width 
         val x = (sampleIdx.toFloat() / totalSamples) * viewWidth
-        val screenCenter = screenWidth / 2
-        val scrollX = (x - screenCenter).toInt()
+        
+        // On centre
+        val scrollX = (x - screenWidth / 2).toInt()
+        
         binding.scroller.smoothScrollTo(scrollX, 0)
     }
 
@@ -181,46 +193,56 @@ class EditorActivity : AppCompatActivity() {
         isPlaying = false
     }
     
-    // ... cutSelection, normalizeSelection, saveFile, onStop ... (identique à avant)
-    // Copiez les fonctions précédentes pour ces méthodes standards
-    
     private fun cutSelection() {
         val start = binding.waveformView.selectionStart
         val end = binding.waveformView.selectionEnd
         if (start < 0 || end <= start) return
-        AlertDialog.Builder(this).setTitle("Couper ?").setPositiveButton("Oui") { _, _ ->
-             val newPcm = ShortArray(pcmData.size - (end - start))
-            System.arraycopy(pcmData, 0, newPcm, 0, start)
-            System.arraycopy(pcmData, end, newPcm, start, pcmData.size - end)
-            pcmData = newPcm
-            binding.waveformView.setWaveform(pcmData)
-            binding.waveformView.clearSelection()
-            binding.txtDuration.text = formatTime(pcmData.size)
-        }.setNegativeButton("Non", null).show()
+
+        AlertDialog.Builder(this)
+            .setTitle("Couper ?")
+            .setPositiveButton("Oui") { _, _ ->
+                 val newPcm = ShortArray(pcmData.size - (end - start))
+                System.arraycopy(pcmData, 0, newPcm, 0, start)
+                System.arraycopy(pcmData, end, newPcm, start, pcmData.size - end)
+
+                pcmData = newPcm
+                binding.waveformView.setWaveform(pcmData)
+                binding.waveformView.clearSelection()
+                binding.txtDuration.text = formatTime(pcmData.size)
+            }
+            .setNegativeButton("Non", null).show()
     }
 
     private fun normalizeSelection() {
         val start = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
         val end = if (binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else pcmData.size
+
         var maxVal = 0
         for (i in start until end) {
             if (abs(pcmData[i].toInt()) > maxVal) maxVal = abs(pcmData[i].toInt())
         }
+
         if (maxVal > 0) {
             val factor = 32767f / maxVal
-            for (i in start until end) pcmData[i] = (pcmData[i] * factor).toInt().toShort()
+            for (i in start until end) {
+                pcmData[i] = (pcmData[i] * factor).toInt().toShort()
+            }
             binding.waveformView.invalidate()
-            Toast.makeText(this, "Normalisé", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Normalisé !", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun saveFile() {
         binding.progressBar.visibility = View.VISIBLE
         Thread {
-            val success = AudioHelper.savePCMToAAC(pcmData, currentFile)
+            // On sauvegarde avec la même fréquence que le fichier source pour ne pas altérer la vitesse
+            val success = AudioHelper.savePCMToAAC(pcmData, currentFile, currentSampleRate)
             runOnUiThread {
                 binding.progressBar.visibility = View.GONE
-                if (success) { Toast.makeText(this, "Sauvegardé", Toast.LENGTH_SHORT).show(); finish() }
+                if (success) {
+                    Toast.makeText(this, "Sauvegardé", Toast.LENGTH_SHORT).show()
+                    finish()
+                }
             }
         }.start()
     }

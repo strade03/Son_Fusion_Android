@@ -46,24 +46,33 @@ class WaveformView @JvmOverloads constructor(
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (samples.isEmpty() || width == 0) return
+        // width peut être 0 au démarrage, ou très grand si zoomé
+        if (samples.isEmpty() || width <= 0) return
 
         val w = width.toFloat()
         val h = height.toFloat()
         val centerY = h / 2f
         
-        // Eviter division par zéro si w très grand
-        val samplesPerPixel = (samples.size / w).toInt().coerceAtLeast(1)
+        // Nombre de samples représentés par 1 pixel
+        // Si w est très grand (zoom max), samplesPerPixel peut être < 1 (on dessine plusieurs pixels pour 1 sample)
+        // Mais ici on fait une simplification : 1 pixel = au moins 1 sample pour éviter les boucles infinies
+        val samplesPerPixel = (samples.size / w).coerceAtLeast(0.1f) 
 
+        // On parcourt les pixels de l'écran (de 0 à width)
         for (i in 0 until width) {
-            val startIdx = (i * samplesPerPixel)
-            val endIdx = ((i + 1) * samplesPerPixel).coerceAtMost(samples.size)
+            val startIdx = (i * samplesPerPixel).toInt()
+            val endIdx = ((i + 1) * samplesPerPixel).toInt().coerceAtMost(samples.size)
             
             var maxVal = 0
-            if (startIdx < endIdx && startIdx < samples.size) {
-                for (j in startIdx until endIdx) {
-                    val v = abs(samples[j].toInt())
-                    if (v > maxVal) maxVal = v
+            if (startIdx < samples.size) {
+                // Si on a moins d'un sample par pixel (gros zoom), on prend juste la valeur du sample
+                if (startIdx >= endIdx) {
+                    maxVal = abs(samples[startIdx].toInt())
+                } else {
+                    for (j in startIdx until endIdx) {
+                        val v = abs(samples[j].toInt())
+                        if (v > maxVal) maxVal = v
+                    }
                 }
             }
 
@@ -71,12 +80,14 @@ class WaveformView @JvmOverloads constructor(
             canvas.drawLine(i.toFloat(), centerY - scaledH, i.toFloat(), centerY + scaledH, paint)
         }
 
+        // Dessin Selection
         if (selectionStart >= 0 && selectionEnd > selectionStart) {
             val x1 = (selectionStart.toFloat() / samples.size) * w
             val x2 = (selectionEnd.toFloat() / samples.size) * w
             canvas.drawRect(x1, 0f, x2, h, selectionPaint)
         }
 
+        // Dessin Tête de lecture
         val px = (playheadPos.toFloat() / samples.size) * w
         canvas.drawLine(px, 0f, px, h, playheadPaint)
     }

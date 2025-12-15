@@ -2,31 +2,30 @@ package com.podcastcreateur.app
 
 import android.media.*
 import java.io.File
-import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/**
- * Gère le décodage (Lecture pour Waveform) et l'encodage (Sauvegarde)
- * en utilisant MediaCodec et MediaExtractor (API Native Android).
- * Format cible : AAC (.m4a)
- */
+// Classe pour transporter les données ET la fréquence d'échantillonnage
+data class AudioContent(
+    val data: ShortArray,
+    val sampleRate: Int
+)
+
 object AudioHelper {
-    private const val SAMPLE_RATE = 44100
-    private const val BIT_RATE = 128000 // 128kbps
+    private const val DEFAULT_SAMPLE_RATE = 44100
+    private const val BIT_RATE = 128000
 
     /**
-     * Décode un fichier audio (m4a, mp3, wav) en PCM (ShortArray)
-     * pour l'affichage de l'onde et l'édition.
+     * Décode et détecte la fréquence réelle (44100, 48000, etc.)
      */
-    fun decodeToPCM(input: File): ShortArray {
-        if (!input.exists()) return ShortArray(0)
+    fun decodeToPCM(input: File): AudioContent {
+        if (!input.exists()) return AudioContent(ShortArray(0), DEFAULT_SAMPLE_RATE)
         
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(input.absolutePath)
         } catch (e: Exception) {
-            return ShortArray(0)
+            return AudioContent(ShortArray(0), DEFAULT_SAMPLE_RATE)
         }
 
         var trackIndex = -1
@@ -42,10 +41,17 @@ object AudioHelper {
             }
         }
 
-        if (trackIndex < 0 || format == null) return ShortArray(0)
+        if (trackIndex < 0 || format == null) return AudioContent(ShortArray(0), DEFAULT_SAMPLE_RATE)
+
+        // RECUPERATION DU SAMPLE RATE REEL
+        val detectedSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+            format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+        } else {
+            DEFAULT_SAMPLE_RATE
+        }
 
         extractor.selectTrack(trackIndex)
-        val mime = format.getString(MediaFormat.KEY_MIME) ?: return ShortArray(0)
+        val mime = format.getString(MediaFormat.KEY_MIME) ?: return AudioContent(ShortArray(0), DEFAULT_SAMPLE_RATE)
         val decoder = MediaCodec.createDecoderByType(mime)
         decoder.configure(format, null, null, 0)
         decoder.start()
@@ -81,9 +87,7 @@ object AudioHelper {
                         pcmData.write(chunk)
                     }
                     decoder.releaseOutputBuffer(outIndex, false)
-                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        break
-                    }
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
                 } else if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
                     if (isEOS) break 
                 }
@@ -98,19 +102,20 @@ object AudioHelper {
         val bytes = pcmData.toByteArray()
         val shorts = ShortArray(bytes.size / 2)
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-        return shorts
+        
+        return AudioContent(shorts, detectedSampleRate)
     }
 
     /**
-     * Encode des données PCM (ShortArray) en fichier AAC (.m4a).
+     * Encode en utilisant la fréquence spécifiée
      */
-    fun savePCMToAAC(pcmData: ShortArray, outputFile: File): Boolean {
+    fun savePCMToAAC(pcmData: ShortArray, outputFile: File, sampleRate: Int = DEFAULT_SAMPLE_RATE): Boolean {
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
 
         try {
             val mime = MediaFormat.MIMETYPE_AUDIO_AAC
-            val format = MediaFormat.createAudioFormat(mime, SAMPLE_RATE, 1) // Mono
+            val format = MediaFormat.createAudioFormat(mime, sampleRate, 1) // Mono
             format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
             format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -124,8 +129,6 @@ object AudioHelper {
             var muxerStarted = false
 
             val outputBufferInfo = MediaCodec.BufferInfo()
-            
-            // Conversion ShortArray -> ByteArray
             val byteBuffer = ByteBuffer.allocate(pcmData.size * 2)
             byteBuffer.order(ByteOrder.LITTLE_ENDIAN)
             for (s in pcmData) byteBuffer.putShort(s)
@@ -141,14 +144,14 @@ object AudioHelper {
                     if (inIndex >= 0) {
                         val inBuffer = encoder.getInputBuffer(inIndex)
                         inBuffer?.clear()
-                        
                         val remaining = fullPcmBytes.size - inputOffset
                         val toRead = if (remaining > 4096) 4096 else remaining
 
                         if (toRead > 0) {
                             inBuffer?.put(fullPcmBytes, inputOffset, toRead)
                             inputOffset += toRead
-                            val pts = (inputOffset.toLong() * 1000000L / (SAMPLE_RATE * 2)).toLong()
+                            // Calcul du timestamp précis basé sur le sampleRate réel
+                            val pts = (inputOffset.toLong() * 1000000L / (sampleRate * 2)).toLong()
                             encoder.queueInputBuffer(inIndex, 0, toRead, pts, 0)
                         } else {
                             encoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
@@ -166,18 +169,14 @@ object AudioHelper {
                     muxerStarted = true
                 } else if (outIndex >= 0) {
                     val encodedData = encoder.getOutputBuffer(outIndex)
-                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
-                        outputBufferInfo.size = 0
-                    }
+                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) outputBufferInfo.size = 0
                     if (outputBufferInfo.size != 0 && muxerStarted) {
                         encodedData?.position(outputBufferInfo.offset)
                         encodedData?.limit(outputBufferInfo.offset + outputBufferInfo.size)
                         muxer.writeSampleData(audioTrackIndex, encodedData!!, outputBufferInfo)
                     }
                     encoder.releaseOutputBuffer(outIndex, false)
-                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
-                        break
-                    }
+                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
                 }
             }
             return true
@@ -190,20 +189,30 @@ object AudioHelper {
         }
     }
 
-    /**
-     * Fusionne plusieurs fichiers (MP3, AAC, WAV...) en un seul fichier AAC.
-     */
     fun mergeFiles(inputs: List<File>, output: File): Boolean {
         if (inputs.isEmpty()) return false
         try {
             val allSamples = ArrayList<Short>()
+            var masterSampleRate = DEFAULT_SAMPLE_RATE
+            
+            // On utilise la fréquence du premier fichier comme référence pour l'export
+            // (Attention: si les fichiers ont des fréquences différentes, cela changera le pitch des suivants.
+            // C'est une limitation sans ré-échantillonnage complexe, mais ça règle le problème du premier fichier)
+            var first = true
+            
             for (file in inputs) {
-                val pcm = decodeToPCM(file)
-                for (s in pcm) allSamples.add(s)
+                val content = decodeToPCM(file)
+                if (first) {
+                    masterSampleRate = content.sampleRate
+                    first = false
+                }
+                for (s in content.data) allSamples.add(s)
             }
+            
             val finalData = ShortArray(allSamples.size)
             for (i in allSamples.indices) finalData[i] = allSamples[i]
-            return savePCMToAAC(finalData, output)
+            
+            return savePCMToAAC(finalData, output, masterSampleRate)
         } catch (e: Exception) {
             e.printStackTrace()
             return false
