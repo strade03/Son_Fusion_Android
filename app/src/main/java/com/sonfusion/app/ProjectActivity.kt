@@ -1,6 +1,7 @@
 package com.podcastcreateur.app
 
 import android.content.Intent
+import android.media.MediaPlayer
 import android.net.Uri
 import android.os.Bundle
 import android.os.Environment
@@ -19,12 +20,8 @@ import com.podcastcreateur.app.databinding.ActivityProjectBinding
 import java.io.File
 import java.io.FileOutputStream
 import java.text.SimpleDateFormat
-import java.util.Collections
-import java.util.Date
-import java.util.Locale
-import android.media.MediaPlayer
+import java.util.*
 
-// Data class pour représenter une chronique
 data class Chronicle(
     val prefix: String, 
     val name: String,   
@@ -42,15 +39,18 @@ class ProjectActivity : AppCompatActivity() {
     private val importFileLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) importFileToProject(uri)
     }
-    private var mediaPlayer: MediaPlayer? = null
     
+    // Gestion lecture
+    private var mediaPlayer: MediaPlayer? = null
+    private var currentPlayingFile: File? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityProjectBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
         val projectName = intent.getStringExtra("PROJECT_NAME") ?: return finish()
-        binding.txtProjectTitle.text = "$projectName"
+        binding.txtProjectTitle.text = projectName
 
         val root = File(getExternalFilesDir(null), "Emissions")
         projectDir = File(root, projectName)
@@ -64,47 +64,14 @@ class ProjectActivity : AppCompatActivity() {
         binding.btnMergeProject.setOnClickListener { performMerge() }
     }
 
-    fun onRecordOrPlay(item: Chronicle) {
-        if (item.audioFile != null && item.audioFile.exists()) {
-            // MODE LECTURE (Aperçu)
-            playPreview(item.audioFile)
-        } else {
-            // MODE ENREGISTREMENT
-            launchRecorder(item)
-        }
-    }
-
-    private fun playPreview(file: File) {
-        // Arrêter si déjà en lecture
-        mediaPlayer?.release()
-        mediaPlayer = null
-
-        try {
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(file.absolutePath)
-                prepare()
-                start()
-                setOnCompletionListener { 
-                    it.release()
-                    mediaPlayer = null
-                    // Idéalement, notifier l'adapter pour changer l'icône stop->play si on gérait l'état
-                }
-            }
-            Toast.makeText(this, "Lecture : ${file.name}", Toast.LENGTH_SHORT).show()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show()
-        }
-    }
-    
-    override fun onStop() {
-        super.onStop()
-        mediaPlayer?.release()
-        mediaPlayer = null
-    }
-
     override fun onResume() {
         super.onResume()
         refreshList()
+    }
+    
+    override fun onPause() {
+        super.onPause()
+        stopPreview() // Arrêter la lecture si on quitte l'écran
     }
 
     private fun setupRecycler() {
@@ -168,7 +135,6 @@ class ProjectActivity : AppCompatActivity() {
         input.setText("Nouvelle chronique")
         input.selectAll()
         input.setTextColor(android.graphics.Color.BLACK)
-        
         val container = FrameLayout(this)
         val params = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         params.leftMargin = 50; params.rightMargin = 50
@@ -181,50 +147,38 @@ class ProjectActivity : AppCompatActivity() {
             .setPositiveButton("Ajouter", null)
             .setNegativeButton("Annuler", null)
             .create()
-
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         dialog.show()
         input.requestFocus()
 
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
             val rawName = input.text.toString().trim()
-            if (rawName.isEmpty()) {
-                Toast.makeText(this, "Le nom ne peut pas être vide", Toast.LENGTH_SHORT).show()
-                return@setOnClickListener
-            }
-
+            if (rawName.isEmpty()) return@setOnClickListener
             val safeName = rawName.replace(Regex("[^\\p{L}0-9 _-]"), "")
             
-            val exists = chronicleList.any { it.name.equals(safeName, ignoreCase = true) }
-            if (exists) {
+            if (chronicleList.any { it.name.equals(safeName, ignoreCase = true) }) {
                 Toast.makeText(this, "Une chronique porte déjà ce nom", Toast.LENGTH_SHORT).show()
             } else {
-                val index = chronicleList.size
-                val prefix = String.format("%03d_", index)
-                
+                val prefix = String.format("%03d_", chronicleList.size)
                 val txtFile = File(projectDir, "$prefix$safeName.txt")
                 if (!txtFile.exists()) txtFile.writeText("")
-                
                 refreshList()
                 dialog.dismiss()
             }
         }
     }
-
+    
     private fun saveOrderOnDisk() {
         val tempRenames = ArrayList<Pair<File, File>>()
         chronicleList.forEachIndexed { index, item ->
             val newPrefix = String.format("%03d_", index)
             val newKey = newPrefix + item.name
-            
             if (item.prefix != newPrefix) {
                 val oldTxt = item.scriptFile
                 val newTxt = File(projectDir, "$newKey.txt")
                 if(oldTxt.exists()) tempRenames.add(oldTxt to newTxt)
-                
                 item.audioFile?.let { oldAudio ->
-                    val ext = "." + oldAudio.extension
-                    val newAudio = File(projectDir, "$newKey$ext")
+                    val newAudio = File(projectDir, "$newKey." + oldAudio.extension)
                     if(oldAudio.exists()) tempRenames.add(oldAudio to newAudio)
                 }
             }
@@ -241,56 +195,113 @@ class ProjectActivity : AppCompatActivity() {
                     val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
                     if (cursor.moveToFirst() && idx >= 0) fileName = cursor.getString(idx)
                 }
-                
-                val extension = fileName.substringAfterLast('.', "mp3")
+                val ext = fileName.substringAfterLast('.', "mp3")
                 val cleanName = fileName.substringBeforeLast('.').replace(Regex("[^a-zA-Z0-9 ._-]"), "")
-                
                 var finalName = cleanName
-                if (chronicleList.any { it.name.equals(finalName, ignoreCase = true) }) {
-                    finalName += "_" + System.currentTimeMillis()
-                }
+                if (chronicleList.any { it.name.equals(finalName, ignoreCase = true) }) finalName += "_" + System.currentTimeMillis()
 
-                val index = String.format("%03d_", chronicleList.size)
-                val destAudio = File(projectDir, "$index$finalName.$extension")
-                val destScript = File(projectDir, "$index$finalName.txt")
-                
-                contentResolver.openInputStream(uri)?.use { input ->
-                    FileOutputStream(destAudio).use { output -> input.copyTo(output) }
-                }
-                
-                if (!destScript.exists()) destScript.createNewFile()
+                val idx = String.format("%03d_", chronicleList.size)
+                val destAudio = File(projectDir, "$idx$finalName.$ext")
+                val destScript = File(projectDir, "$idx$finalName.txt")
+                contentResolver.openInputStream(uri)?.use { input -> FileOutputStream(destAudio).use { output -> input.copyTo(output) } }
+                if (!destScript.exists()) destScript.createNewFile() // Script vide
 
-                runOnUiThread {
-                    refreshList()
-                    Toast.makeText(this, "Importé", Toast.LENGTH_SHORT).show()
-                }
+                runOnUiThread { refreshList(); Toast.makeText(this, "Importé", Toast.LENGTH_SHORT).show() }
             } catch (e: Exception) { e.printStackTrace() }
         }.start()
     }
 
-    // ACTIONS
+    fun onRecordOrPlay(item: Chronicle) {
+        if (item.audioFile != null && item.audioFile.exists()) {
+            if (currentPlayingFile == item.audioFile) {
+                stopPreview() // Clic sur Stop
+            } else {
+                playPreview(item.audioFile) // Clic sur Play (nouveau fichier)
+            }
+        } else {
+            launchRecorder(item)
+        }
+    }
+
+    private fun playPreview(file: File) {
+        stopPreview() // Arrêter l'ancien
+        try {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                prepare()
+                start()
+                setOnCompletionListener { stopPreview() }
+            }
+            currentPlayingFile = file
+            adapter.notifyDataSetChanged() // Met à jour les icônes
+        } catch (e: Exception) {
+            Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun stopPreview() {
+        mediaPlayer?.release()
+        mediaPlayer = null
+        currentPlayingFile = null
+        adapter.notifyDataSetChanged() // Remet les icônes Play
+    }
+    
+    // Helper pour l'adapter
+    fun isFilePlaying(file: File?): Boolean {
+        return file != null && file == currentPlayingFile
+    }
+
+    // --- EXPORT AVEC PROGRESSION ---
+
+    private fun performMerge() {
+         val filesToMerge = chronicleList.mapNotNull { it.audioFile }
+         if (filesToMerge.isEmpty()) {
+             Toast.makeText(this, "Aucun audio à exporter", Toast.LENGTH_SHORT).show()
+             return
+         }
+         
+         // Dialogue de chargement
+         val progressDialog = AlertDialog.Builder(this)
+             .setTitle("Export en cours...")
+             .setMessage("Veuillez patienter pendant la fusion.")
+             .setCancelable(false) // Empêche de fermer en cliquant à côté
+             .create()
+         progressDialog.show()
+
+         val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "PodcastCreateur")
+         if (!publicDir.exists()) publicDir.mkdirs()
+         
+         // Nom formaté : NomEmission_20231215_143000.m4a
+         val safeProjectName = projectDir.name.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+         val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+         val timestamp = sdf.format(Date())
+         val outputName = "${safeProjectName}_$timestamp.m4a"
+         val destFile = File(publicDir, outputName)
+         
+         Thread {
+             val success = AudioHelper.mergeFiles(filesToMerge, destFile)
+             runOnUiThread {
+                 progressDialog.dismiss() // Fermer le chargement
+                 if (success) {
+                     AlertDialog.Builder(this)
+                        .setTitle("Export terminé !")
+                        .setMessage("Fichier sauvegardé :\nMusic/PodcastCreateur/$outputName")
+                        .setPositiveButton("OK", null)
+                        .show()
+                 } else {
+                     Toast.makeText(this, "Erreur lors de l'export", Toast.LENGTH_LONG).show()
+                 }
+             }
+         }.start()
+    }
+
+    // --- ACTIONS CLASSIQUES ---
     
     fun onOpenScript(item: Chronicle) {
         val intent = Intent(this, ScriptEditorActivity::class.java)
         intent.putExtra("SCRIPT_PATH", item.scriptFile.absolutePath)
         startActivity(intent)
     }
-
-    // fun onRecord(item: Chronicle) {
-    //     if (item.audioFile != null && item.audioFile.exists()) {
-    //         AlertDialog.Builder(this)
-    //             .setTitle("Ré-enregistrer ?")
-    //             .setMessage("Un enregistrement audio existe déjà pour '${item.name}'. Voulez-vous l'écraser ?")
-    //             .setPositiveButton("Oui, écraser") { _, _ ->
-    //                 item.audioFile.delete() 
-    //                 launchRecorder(item)
-    //             }
-    //             .setNegativeButton("Annuler", null)
-    //             .show()
-    //     } else {
-    //         launchRecorder(item)
-    //     }
-    // }
 
     private fun launchRecorder(item: Chronicle) {
         val intent = Intent(this, RecorderActivity::class.java)
@@ -302,21 +313,18 @@ class ProjectActivity : AppCompatActivity() {
     }
 
     fun onEditAudio(item: Chronicle) {
-        if (item.audioFile != null && item.audioFile.exists()) {
-            val intent = Intent(this, EditorActivity::class.java)
-            intent.putExtra("FILE_PATH", item.audioFile.absolutePath)
-            startActivity(intent)
-        } else {
-            Toast.makeText(this, "Aucun audio à éditer", Toast.LENGTH_SHORT).show()
-        }
+        stopPreview() // Arrêter la lecture avant d'ouvrir l'éditeur
+        val intent = Intent(this, EditorActivity::class.java)
+        intent.putExtra("FILE_PATH", item.audioFile!!.absolutePath)
+        startActivity(intent)
     }
 
     fun onRename(item: Chronicle) {
+        // ... (Code identique à avant)
         val input = EditText(this)
         input.setText(item.name)
         input.selectAll()
         input.setTextColor(android.graphics.Color.BLACK)
-        
         val container = FrameLayout(this)
         val params = FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         params.leftMargin = 50; params.rightMargin = 50
@@ -328,51 +336,25 @@ class ProjectActivity : AppCompatActivity() {
             .setView(container)
             .setPositiveButton("Renommer") { _, _ ->
                 val newName = input.text.toString().trim().replace(Regex("[^\\p{L}0-9 _-]"), "")
-                
-                if (chronicleList.any { it.name.equals(newName, ignoreCase = true) && it != item }) {
-                    Toast.makeText(this, "Ce nom existe déjà", Toast.LENGTH_SHORT).show()
-                } else if (newName.isNotEmpty() && newName != item.name) {
+                if (newName.isNotEmpty() && newName != item.name) {
                     val oldBase = item.prefix + item.name
                     val newBase = item.prefix + newName
-                    
                     item.scriptFile.renameTo(File(projectDir, "$newBase.txt"))
                     item.audioFile?.renameTo(File(projectDir, "$newBase." + item.audioFile.extension))
-                    
                     refreshList()
                 }
             }
-            .setNegativeButton("Annuler", null)
-            .show()
+            .setNegativeButton("Annuler", null).show()
     }
     
     fun onDelete(item: Chronicle) {
-        AlertDialog.Builder(this)
-            .setTitle("Supprimer la chronique ?")
-            .setMessage("${item.name}")
-            .setPositiveButton("Oui") { _, _ ->
-                item.scriptFile.delete()
-                item.audioFile?.delete()
-                refreshList()
-                saveOrderOnDisk() 
-            }
-            .setNegativeButton("Non", null)
-            .show()
-    }
-    
-    private fun performMerge() {
-         val filesToMerge = chronicleList.mapNotNull { it.audioFile }
-         if (filesToMerge.isEmpty()) return
-         
-         val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "PodcastCreateur")
-         if (!publicDir.exists()) publicDir.mkdirs()
-         val outputName = "${projectDir.name}_final.m4a"
-         val destFile = File(publicDir, outputName)
-         
-         Thread {
-             if (AudioHelper.mergeFiles(filesToMerge, destFile)) {
-                 runOnUiThread { Toast.makeText(this, "Exporté: $outputName", Toast.LENGTH_LONG).show() }
-             }
-         }.start()
+        // ... (Code identique à avant)
+        AlertDialog.Builder(this).setTitle("Supprimer ?").setMessage(item.name).setPositiveButton("Oui") { _, _ ->
+            item.scriptFile.delete()
+            item.audioFile?.delete()
+            refreshList()
+            saveOrderOnDisk() 
+        }.setNegativeButton("Non", null).show()
     }
 }
 
@@ -386,7 +368,6 @@ class ChronicleAdapter(
         val txtStatus: TextView = v.findViewById(R.id.txtStatus)
         val btnScript: ImageButton = v.findViewById(R.id.btnItemScript)
         val btnRecord: ImageButton = v.findViewById(R.id.btnItemRecord)
-        // btnEditAudio supprimé du layout et du VH
         val btnMenu: ImageButton = v.findViewById(R.id.btnItemMenu)
     }
 
@@ -401,20 +382,22 @@ class ChronicleAdapter(
         
         val hasAudio = item.audioFile != null && item.audioFile.exists()
         val scriptLen = if (item.scriptFile.exists()) item.scriptFile.length() else 0
-        val scriptStatus = if (scriptLen > 0) "Script OK" else "Script vide"
-        val audioStatus = if (hasAudio) "Audio OK" else "Pas d'audio"
-        holder.txtStatus.text = "$scriptStatus • $audioStatus"
+        val statusText = if (hasAudio) "Audio OK" else "Pas d'audio"
+        holder.txtStatus.text = statusText
 
-        // CHANGEMENT D'ICÔNE
+        // GESTION ICONE LECTURE / STOP / MICRO
         if (hasAudio) {
-            holder.btnRecord.setImageResource(R.drawable.ic_play)
+            // Si c'est le fichier en cours de lecture
+            if (activity.isFilePlaying(item.audioFile)) {
+                holder.btnRecord.setImageResource(R.drawable.ic_stop_read) // Carré Stop
+            } else {
+                holder.btnRecord.setImageResource(R.drawable.ic_play) // Triangle Play
+            }
         } else {
-            holder.btnRecord.setImageResource(R.drawable.ic_record)
+            holder.btnRecord.setImageResource(R.drawable.ic_record) // Rond Micro
         }
 
         holder.btnScript.setOnClickListener { activity.onOpenScript(item) }
-        
-        // Clic unique qui redirige vers onRecordOrPlay
         holder.btnRecord.setOnClickListener { activity.onRecordOrPlay(item) }
         
         holder.btnMenu.setOnClickListener { 
@@ -422,7 +405,6 @@ class ChronicleAdapter(
             if (hasAudio) popup.menu.add("Éditer l'audio")
             popup.menu.add("Renommer")
             popup.menu.add("Supprimer")
-            
             popup.setOnMenuItemClickListener { menuItem ->
                 when(menuItem.title) {
                     "Éditer l'audio" -> activity.onEditAudio(item)

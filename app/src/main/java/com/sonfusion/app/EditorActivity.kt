@@ -21,7 +21,7 @@ class EditorActivity : AppCompatActivity() {
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false
     
-    // Zoom vars
+    // Zoom
     private var zoomLevel = 1.0f
     private var screenWidth = 0
 
@@ -30,7 +30,6 @@ class EditorActivity : AppCompatActivity() {
         binding = ActivityEditorBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Récupérer la largeur de l'écran pour les calculs de zoom
         screenWidth = resources.displayMetrics.widthPixels
 
         val path = intent.getStringExtra("FILE_PATH")
@@ -47,24 +46,28 @@ class EditorActivity : AppCompatActivity() {
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
         binding.btnSave.setOnClickListener { saveFile() }
         
-        // Gestion Zoom (Les boutons sont maintenant dans la toolbar)
-        binding.btnZoomIn.setOnClickListener { applyZoom(zoomLevel * 1.5f) }
-        binding.btnZoomOut.setOnClickListener { applyZoom(zoomLevel / 1.5f) }
+        // CORRECTION ZOOM : On utilise une méthode plus robuste pour redimensionner
+        binding.btnZoomIn.setOnClickListener { 
+            applyZoom(zoomLevel * 1.5f) 
+            Toast.makeText(this, "Zoom In", Toast.LENGTH_SHORT).show() 
+        }
+        binding.btnZoomOut.setOnClickListener { 
+            applyZoom(zoomLevel / 1.5f) 
+            Toast.makeText(this, "Zoom Out", Toast.LENGTH_SHORT).show()
+        }
         
-        // Gestion Ré-enregistrement
         binding.btnReRecord.setOnClickListener {
             AlertDialog.Builder(this)
                 .setTitle("Refaire l'enregistrement ?")
                 .setMessage("L'audio actuel sera remplacé.")
                 .setPositiveButton("Oui") { _, _ ->
+                    stopAudio() // Sécurité
                     val regex = Regex("^(\\d{3}_)(.*)\\.(.*)$")
                     val match = regex.find(currentFile.name)
-                    
                     if (match != null) {
                         val (prefix, name, _) = match.destructured
                         val projectPath = currentFile.parent
                         val scriptPath = File(projectPath, "$prefix$name.txt").absolutePath
-                        
                         val intent = Intent(this, RecorderActivity::class.java)
                         intent.putExtra("PROJECT_PATH", projectPath)
                         intent.putExtra("CHRONICLE_NAME", name)
@@ -72,26 +75,24 @@ class EditorActivity : AppCompatActivity() {
                         intent.putExtra("SCRIPT_PATH", scriptPath)
                         startActivity(intent)
                         finish()
-                    } else {
-                         Toast.makeText(this, "Impossible de déterminer la chronique", Toast.LENGTH_SHORT).show()
                     }
                 }
-                .setNegativeButton("Annuler", null)
-                .show()
+                .setNegativeButton("Annuler", null).show()
         }
     }
 
     private fun applyZoom(newZoom: Float) {
-        // Bornes de zoom (x1 à x10)
-        val clampedZoom = newZoom.coerceIn(1.0f, 10.0f)
-        if (clampedZoom == zoomLevel) return
+        val clamped = newZoom.coerceIn(1.0f, 15.0f)
+        if (abs(clamped - zoomLevel) < 0.1f) return
         
-        zoomLevel = clampedZoom
+        zoomLevel = clamped
         
-        // On redimensionne la WaveformView à l'intérieur du ScrollView
+        // On force la largeur de la vue Waveform
         val params = binding.waveformView.layoutParams
         params.width = (screenWidth * zoomLevel).toInt()
         binding.waveformView.layoutParams = params
+        
+        // Forcer le redessin
         binding.waveformView.requestLayout()
         binding.waveformView.invalidate()
     }
@@ -107,12 +108,11 @@ class EditorActivity : AppCompatActivity() {
                     binding.txtDuration.text = formatTime(pcmData.size)
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
                 runOnUiThread { Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show() }
             }
         }.start()
     }
-    
+
     private fun formatTime(samples: Int): String {
         val sec = samples / 44100
         val m = sec / 60
@@ -123,7 +123,8 @@ class EditorActivity : AppCompatActivity() {
     private fun playAudio() {
         if (pcmData.isEmpty()) return
         isPlaying = true
-        binding.btnPlay.setImageResource(R.drawable.ic_pause)
+        // ICÔNE STOP (carré) PENDANT LA LECTURE
+        binding.btnPlay.setImageResource(R.drawable.ic_stop_read) 
 
         Thread {
             val sampleRate = 44100
@@ -158,6 +159,7 @@ class EditorActivity : AppCompatActivity() {
             audioTrack = null
             isPlaying = false
             runOnUiThread { 
+                // RETOUR ICÔNE PLAY
                 binding.btnPlay.setImageResource(R.drawable.ic_play) 
                 if (offset >= endIdx) binding.waveformView.playheadPos = startIdx
                 binding.waveformView.invalidate()
@@ -168,13 +170,10 @@ class EditorActivity : AppCompatActivity() {
     private fun autoScroll(sampleIdx: Int) {
         val totalSamples = pcmData.size
         if (totalSamples == 0) return
-        
         val viewWidth = binding.waveformView.width
         val x = (sampleIdx.toFloat() / totalSamples) * viewWidth
-        
         val screenCenter = screenWidth / 2
         val scrollX = (x - screenCenter).toInt()
-        
         binding.scroller.smoothScrollTo(scrollX, 0)
     }
 
@@ -182,42 +181,36 @@ class EditorActivity : AppCompatActivity() {
         isPlaying = false
     }
     
+    // ... cutSelection, normalizeSelection, saveFile, onStop ... (identique à avant)
+    // Copiez les fonctions précédentes pour ces méthodes standards
+    
     private fun cutSelection() {
         val start = binding.waveformView.selectionStart
         val end = binding.waveformView.selectionEnd
         if (start < 0 || end <= start) return
-
-        AlertDialog.Builder(this)
-            .setTitle("Couper ?")
-            .setPositiveButton("Oui") { _, _ ->
-                 val newPcm = ShortArray(pcmData.size - (end - start))
-                System.arraycopy(pcmData, 0, newPcm, 0, start)
-                System.arraycopy(pcmData, end, newPcm, start, pcmData.size - end)
-
-                pcmData = newPcm
-                binding.waveformView.setWaveform(pcmData)
-                binding.waveformView.clearSelection()
-                binding.txtDuration.text = formatTime(pcmData.size)
-            }
-            .setNegativeButton("Non", null).show()
+        AlertDialog.Builder(this).setTitle("Couper ?").setPositiveButton("Oui") { _, _ ->
+             val newPcm = ShortArray(pcmData.size - (end - start))
+            System.arraycopy(pcmData, 0, newPcm, 0, start)
+            System.arraycopy(pcmData, end, newPcm, start, pcmData.size - end)
+            pcmData = newPcm
+            binding.waveformView.setWaveform(pcmData)
+            binding.waveformView.clearSelection()
+            binding.txtDuration.text = formatTime(pcmData.size)
+        }.setNegativeButton("Non", null).show()
     }
 
     private fun normalizeSelection() {
-         val start = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
+        val start = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
         val end = if (binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else pcmData.size
-
         var maxVal = 0
         for (i in start until end) {
             if (abs(pcmData[i].toInt()) > maxVal) maxVal = abs(pcmData[i].toInt())
         }
-
         if (maxVal > 0) {
             val factor = 32767f / maxVal
-            for (i in start until end) {
-                pcmData[i] = (pcmData[i] * factor).toInt().toShort()
-            }
+            for (i in start until end) pcmData[i] = (pcmData[i] * factor).toInt().toShort()
             binding.waveformView.invalidate()
-            Toast.makeText(this, "Normalisé !", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Normalisé", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -227,10 +220,7 @@ class EditorActivity : AppCompatActivity() {
             val success = AudioHelper.savePCMToAAC(pcmData, currentFile)
             runOnUiThread {
                 binding.progressBar.visibility = View.GONE
-                if (success) {
-                    Toast.makeText(this, "Sauvegardé", Toast.LENGTH_SHORT).show()
-                    finish()
-                }
+                if (success) { Toast.makeText(this, "Sauvegardé", Toast.LENGTH_SHORT).show(); finish() }
             }
         }.start()
     }

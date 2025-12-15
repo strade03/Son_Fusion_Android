@@ -37,11 +37,6 @@ class WaveformView @JvmOverloads constructor(
         requestLayout()
         invalidate()
     }
-    
-    fun getPixelsPerSample(): Float {
-        if (samples.isEmpty()) return 0f
-        return width.toFloat() / samples.size
-    }
 
     fun clearSelection() { 
         selectionStart = -1; 
@@ -57,15 +52,15 @@ class WaveformView @JvmOverloads constructor(
         val h = height.toFloat()
         val centerY = h / 2f
         
-        // Optimisation : On dessine uniquement ce qui est nécessaire selon la largeur actuelle
-        val samplesPerPixel = samples.size / w
+        // Eviter division par zéro si w très grand
+        val samplesPerPixel = (samples.size / w).toInt().coerceAtLeast(1)
 
         for (i in 0 until width) {
-            val startIdx = (i * samplesPerPixel).toInt()
-            val endIdx = ((i + 1) * samplesPerPixel).toInt().coerceAtMost(samples.size)
+            val startIdx = (i * samplesPerPixel)
+            val endIdx = ((i + 1) * samplesPerPixel).coerceAtMost(samples.size)
             
             var maxVal = 0
-            if (startIdx < endIdx) {
+            if (startIdx < endIdx && startIdx < samples.size) {
                 for (j in startIdx until endIdx) {
                     val v = abs(samples[j].toInt())
                     if (v > maxVal) maxVal = v
@@ -76,30 +71,23 @@ class WaveformView @JvmOverloads constructor(
             canvas.drawLine(i.toFloat(), centerY - scaledH, i.toFloat(), centerY + scaledH, paint)
         }
 
-        // Dessin Sélection
         if (selectionStart >= 0 && selectionEnd > selectionStart) {
             val x1 = (selectionStart.toFloat() / samples.size) * w
             val x2 = (selectionEnd.toFloat() / samples.size) * w
             canvas.drawRect(x1, 0f, x2, h, selectionPaint)
         }
 
-        // Dessin Tête de lecture
         val px = (playheadPos.toFloat() / samples.size) * w
         canvas.drawLine(px, 0f, px, h, playheadPaint)
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (samples.isEmpty()) return false
-
-        // Conversion X -> Index Sample
         val sampleIdx = ((event.x / width) * samples.size).toInt().coerceIn(0, samples.size)
 
         when (event.action) {
             MotionEvent.ACTION_DOWN -> {
-                // CORRECTION CRITIQUE : Empêche le ScrollView parent de voler l'événement tactile
-                // Cela permet à la sélection de fonctionner même si on est dans un ScrollView
                 parent?.requestDisallowInterceptTouchEvent(true)
-
                 selectionStart = sampleIdx
                 selectionEnd = sampleIdx
                 playheadPos = sampleIdx
@@ -110,9 +98,7 @@ class WaveformView @JvmOverloads constructor(
                 invalidate()
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                // On rend la main au parent une fois le doigt levé
                 parent?.requestDisallowInterceptTouchEvent(false)
-
                 if (selectionStart > selectionEnd) {
                     val temp = selectionStart
                     selectionStart = selectionEnd
