@@ -42,7 +42,8 @@ class ProjectActivity : AppCompatActivity() {
     private val importFileLauncher = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) importFileToProject(uri)
     }
-
+    private var mediaPlayer: MediaPlayer? = null
+    
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityProjectBinding.inflate(layoutInflater)
