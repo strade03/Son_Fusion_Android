@@ -22,6 +22,7 @@ import java.text.SimpleDateFormat
 import java.util.Collections
 import java.util.Date
 import java.util.Locale
+import android.media.MediaPlayer
 
 // Data class pour représenter une chronique
 data class Chronicle(
@@ -60,6 +61,44 @@ class ProjectActivity : AppCompatActivity() {
 
         binding.btnImportFile.setOnClickListener { importFileLauncher.launch("audio/*") }
         binding.btnMergeProject.setOnClickListener { performMerge() }
+    }
+
+    fun onRecordOrPlay(item: Chronicle) {
+        if (item.audioFile != null && item.audioFile.exists()) {
+            // MODE LECTURE (Aperçu)
+            playPreview(item.audioFile)
+        } else {
+            // MODE ENREGISTREMENT
+            launchRecorder(item)
+        }
+    }
+
+    private fun playPreview(file: File) {
+        // Arrêter si déjà en lecture
+        mediaPlayer?.release()
+        mediaPlayer = null
+
+        try {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(file.absolutePath)
+                prepare()
+                start()
+                setOnCompletionListener { 
+                    it.release()
+                    mediaPlayer = null
+                    // Idéalement, notifier l'adapter pour changer l'icône stop->play si on gérait l'état
+                }
+            }
+            Toast.makeText(this, "Lecture : ${file.name}", Toast.LENGTH_SHORT).show()
+        } catch (e: Exception) {
+            Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show()
+        }
+    }
+    
+    override fun onStop() {
+        super.onStop()
+        mediaPlayer?.release()
+        mediaPlayer = null
     }
 
     override fun onResume() {
@@ -236,21 +275,21 @@ class ProjectActivity : AppCompatActivity() {
         startActivity(intent)
     }
 
-    fun onRecord(item: Chronicle) {
-        if (item.audioFile != null && item.audioFile.exists()) {
-            AlertDialog.Builder(this)
-                .setTitle("Ré-enregistrer ?")
-                .setMessage("Un enregistrement audio existe déjà pour '${item.name}'. Voulez-vous l'écraser ?")
-                .setPositiveButton("Oui, écraser") { _, _ ->
-                    item.audioFile.delete() 
-                    launchRecorder(item)
-                }
-                .setNegativeButton("Annuler", null)
-                .show()
-        } else {
-            launchRecorder(item)
-        }
-    }
+    // fun onRecord(item: Chronicle) {
+    //     if (item.audioFile != null && item.audioFile.exists()) {
+    //         AlertDialog.Builder(this)
+    //             .setTitle("Ré-enregistrer ?")
+    //             .setMessage("Un enregistrement audio existe déjà pour '${item.name}'. Voulez-vous l'écraser ?")
+    //             .setPositiveButton("Oui, écraser") { _, _ ->
+    //                 item.audioFile.delete() 
+    //                 launchRecorder(item)
+    //             }
+    //             .setNegativeButton("Annuler", null)
+    //             .show()
+    //     } else {
+    //         launchRecorder(item)
+    //     }
+    // }
 
     private fun launchRecorder(item: Chronicle) {
         val intent = Intent(this, RecorderActivity::class.java)
@@ -365,21 +404,21 @@ class ChronicleAdapter(
         val audioStatus = if (hasAudio) "Audio OK" else "Pas d'audio"
         holder.txtStatus.text = "$scriptStatus • $audioStatus"
 
-        // Changement d'icône si audio présent (optionnel, ici on garde mic)
-        holder.btnRecord.setImageResource(R.drawable.ic_record) 
+        // CHANGEMENT D'ICÔNE
+        if (hasAudio) {
+            holder.btnRecord.setImageResource(R.drawable.ic_play)
+        } else {
+            holder.btnRecord.setImageResource(R.drawable.ic_record)
+        }
 
         holder.btnScript.setOnClickListener { activity.onOpenScript(item) }
-        holder.btnRecord.setOnClickListener { activity.onRecord(item) }
         
-        // Configuration du Menu
+        // Clic unique qui redirige vers onRecordOrPlay
+        holder.btnRecord.setOnClickListener { activity.onRecordOrPlay(item) }
+        
         holder.btnMenu.setOnClickListener { 
             val popup = PopupMenu(activity, holder.btnMenu)
-            
-            // Ajout conditionnel de l'option "Éditer l'audio"
-            if (hasAudio) {
-                popup.menu.add("Éditer l'audio")
-            }
-            
+            if (hasAudio) popup.menu.add("Éditer l'audio")
             popup.menu.add("Renommer")
             popup.menu.add("Supprimer")
             

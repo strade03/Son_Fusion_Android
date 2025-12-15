@@ -29,7 +29,6 @@ class RecorderActivity : AppCompatActivity() {
         val name = intent.getStringExtra("CHRONICLE_NAME") ?: "Temp"
         val scriptPath = intent.getStringExtra("SCRIPT_PATH")
 
-        // Charger le script
         if (scriptPath != null) {
             val scriptFile = File(scriptPath)
             if (scriptFile.exists()) {
@@ -38,8 +37,6 @@ class RecorderActivity : AppCompatActivity() {
             }
         }
         
-        // Définir le fichier de sortie
-        // On écrase l'ancien audio s'il existe pour cette chronique
         outputFile = File(projectPath, "$prefix$name.m4a")
 
         binding.btnRecordToggle.setOnClickListener {
@@ -83,11 +80,17 @@ class RecorderActivity : AppCompatActivity() {
         binding.btnRecordToggle.setImageResource(R.drawable.ic_record)
         
         Toast.makeText(this, "Enregistrement terminé", Toast.LENGTH_SHORT).show()
-        finish() // Retour à la liste
+        
+        // MODIFICATION : Ouvrir l'éditeur directement
+        val intent = Intent(this, EditorActivity::class.java)
+        intent.putExtra("FILE_PATH", outputFile.absolutePath)
+        startActivity(intent)
+        
+        finish() 
     }
     
     override fun onStop() {
         super.onStop()
         if (isRecording) stopRecording()
     }
-} 
+}

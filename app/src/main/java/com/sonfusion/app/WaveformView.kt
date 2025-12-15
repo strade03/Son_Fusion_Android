@@ -20,7 +20,7 @@ class WaveformView @JvmOverloads constructor(
         style = Paint.Style.STROKE
     }
     private val selectionPaint = Paint().apply {
-        color = Color.parseColor("#550000FF") // Semi-transparent blue
+        color = Color.parseColor("#550000FF")
         style = Paint.Style.FILL
     }
     private val playheadPaint = Paint().apply {
@@ -37,30 +37,42 @@ class WaveformView @JvmOverloads constructor(
         requestLayout()
         invalidate()
     }
+    
+    // Pour calculer la position en pixels par rapport aux samples, on utilise la largeur actuelle de la vue
+    fun getPixelsPerSample(): Float {
+        if (samples.isEmpty()) return 0f
+        return width.toFloat() / samples.size
+    }
 
     fun clearSelection() { 
         selectionStart = -1; 
         selectionEnd = -1; 
-        invalidate() }
+        invalidate() 
+    }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (samples.isEmpty()) return
+        if (samples.isEmpty() || width == 0) return
 
-        val width = width.toFloat()
-        val height = height.toFloat()
-        val centerY = height / 2f
-        val samplesPerPixel = samples.size / width
+        val w = width.toFloat()
+        val h = height.toFloat()
+        val centerY = h / 2f
+        
+        // On dessine un point par pixel horizontal
+        // On calcule combien de samples correspondent à 1 pixel
+        val samplesPerPixel = samples.size / w
 
-        // Draw Waveform (Simplified: just max value per chunk)
-        for (i in 0 until width.toInt()) {
+        for (i in 0 until width) {
             val startIdx = (i * samplesPerPixel).toInt()
-            var maxVal = 0
             val endIdx = ((i + 1) * samplesPerPixel).toInt().coerceAtMost(samples.size)
-
-            for (j in startIdx until endIdx) {
-                val v = abs(samples[j].toInt())
-                if (v > maxVal) maxVal = v
+            
+            var maxVal = 0
+            // On prend la valeur max (peak) dans cet intervalle
+            if (startIdx < endIdx) {
+                for (j in startIdx until endIdx) {
+                    val v = abs(samples[j].toInt())
+                    if (v > maxVal) maxVal = v
+                }
             }
 
             val scaledH = (maxVal / 32767f) * centerY
@@ -69,20 +81,20 @@ class WaveformView @JvmOverloads constructor(
 
         // Draw Selection
         if (selectionStart >= 0 && selectionEnd > selectionStart) {
-            val x1 = (selectionStart.toFloat() / samples.size) * width
-            val x2 = (selectionEnd.toFloat() / samples.size) * width
-            canvas.drawRect(x1, 0f, x2, height, selectionPaint)
+            val x1 = (selectionStart.toFloat() / samples.size) * w
+            val x2 = (selectionEnd.toFloat() / samples.size) * w
+            canvas.drawRect(x1, 0f, x2, h, selectionPaint)
         }
 
         // Draw Playhead
-        val px = (playheadPos.toFloat() / samples.size) * width
-        canvas.drawLine(px, 0f, px, height, playheadPaint)
+        val px = (playheadPos.toFloat() / samples.size) * w
+        canvas.drawLine(px, 0f, px, h, playheadPaint)
     }
 
-    // Basic touch handling for selection
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (samples.isEmpty()) return false
 
+        // Conversion coordonnée X -> Index Sample
         val sampleIdx = ((event.x / width) * samples.size).toInt().coerceIn(0, samples.size)
 
         when (event.action) {

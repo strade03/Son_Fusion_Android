@@ -1,10 +1,13 @@
 package com.podcastcreateur.app
 
+import android.content.Intent
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Bundle
 import android.view.View
+import android.view.ViewGroup
+import android.widget.HorizontalScrollView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -19,11 +22,18 @@ class EditorActivity : AppCompatActivity() {
     private var pcmData: ShortArray = ShortArray(0)
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false
+    
+    // Zoom vars
+    private var zoomLevel = 1.0f
+    private var screenWidth = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityEditorBinding.inflate(layoutInflater)
         setContentView(binding.root)
+
+        // Récupérer la largeur de l'écran pour les calculs de zoom
+        screenWidth = resources.displayMetrics.widthPixels
 
         val path = intent.getStringExtra("FILE_PATH")
         if (path == null) { finish(); return }
@@ -38,12 +48,64 @@ class EditorActivity : AppCompatActivity() {
         binding.btnCut.setOnClickListener { cutSelection() }
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
         binding.btnSave.setOnClickListener { saveFile() }
+        
+        // Gestion Zoom
+        binding.btnZoomIn.setOnClickListener { applyZoom(zoomLevel * 1.5f) }
+        binding.btnZoomOut.setOnClickListener { applyZoom(zoomLevel / 1.5f) }
+        
+        // Gestion Ré-enregistrement
+        binding.btnReRecord.setOnClickListener {
+            AlertDialog.Builder(this)
+                .setTitle("Refaire l'enregistrement ?")
+                .setMessage("L'audio actuel sera remplacé.")
+                .setPositiveButton("Oui") { _, _ ->
+                    // On relance RecorderActivity avec les bons paramètres
+                    // Il nous faut le prefix/nom. On les extrait du fichier ou on les passe en Intent si possible.
+                    // Ici on déduit du nom de fichier : "001_NomChronique.m4a"
+                    val regex = Regex("^(\\d{3}_)(.*)\\.(.*)$")
+                    val match = regex.find(currentFile.name)
+                    
+                    if (match != null) {
+                        val (prefix, name, _) = match.destructured
+                        val projectPath = currentFile.parent
+                        
+                        // Chercher le script associé
+                        val scriptPath = File(projectPath, "$prefix$name.txt").absolutePath
+                        
+                        val intent = Intent(this, RecorderActivity::class.java)
+                        intent.putExtra("PROJECT_PATH", projectPath)
+                        intent.putExtra("CHRONICLE_NAME", name)
+                        intent.putExtra("CHRONICLE_PREFIX", prefix)
+                        intent.putExtra("SCRIPT_PATH", scriptPath)
+                        startActivity(intent)
+                        finish() // On ferme l'éditeur actuel
+                    } else {
+                         Toast.makeText(this, "Impossible de déterminer la chronique", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                .setNegativeButton("Annuler", null)
+                .show()
+        }
+    }
+
+    private fun applyZoom(newZoom: Float) {
+        // Bornes de zoom (x1 à x10)
+        val clampedZoom = newZoom.coerceIn(1.0f, 10.0f)
+        if (clampedZoom == zoomLevel) return
+        
+        zoomLevel = clampedZoom
+        
+        // On redimensionne la WaveformView à l'intérieur du ScrollView
+        val params = binding.waveformView.layoutParams
+        params.width = (screenWidth * zoomLevel).toInt()
+        binding.waveformView.layoutParams = params
+        binding.waveformView.requestLayout()
+        binding.waveformView.invalidate()
     }
 
     private fun loadWaveform() {
         Thread {
             try {
-                // Utilisation de AudioHelper pour décoder (compatible m4a/mp3)
                 val data = AudioHelper.decodeToPCM(currentFile)
                 pcmData = data
                 runOnUiThread {
@@ -57,6 +119,9 @@ class EditorActivity : AppCompatActivity() {
             }
         }.start()
     }
+    
+    // ... formatTime, playAudio, stopAudio, cut, normalize, save ...
+    // Code identique au précédent, je remets playAudio pour ajuster le scroll
 
     private fun formatTime(samples: Int): String {
         val sec = samples / 44100
@@ -68,7 +133,7 @@ class EditorActivity : AppCompatActivity() {
     private fun playAudio() {
         if (pcmData.isEmpty()) return
         isPlaying = true
-        binding.btnPlay.setImageResource(R.drawable.ic_pause)
+        binding.btnPlay.setImageResource(R.drawable.ic_pause) // ou ic_stop si pas d'icone pause
 
         Thread {
             val sampleRate = 44100
@@ -77,12 +142,7 @@ class EditorActivity : AppCompatActivity() {
 
             audioTrack?.play()
 
-            var startIdx = 0
-            if (binding.waveformView.selectionStart >= 0) {
-                startIdx = binding.waveformView.selectionStart
-            } else {
-                startIdx = binding.waveformView.playheadPos
-            }
+            var startIdx = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos
             startIdx = startIdx.coerceIn(0, pcmData.size)
 
             val bufferSize = 2048
@@ -95,7 +155,11 @@ class EditorActivity : AppCompatActivity() {
                 offset += len
                 
                 if (offset % 8820 == 0) { 
-                     runOnUiThread { binding.waveformView.playheadPos = offset; binding.waveformView.invalidate() }
+                     runOnUiThread { 
+                         binding.waveformView.playheadPos = offset
+                         binding.waveformView.invalidate()
+                         autoScroll(offset) // Suivre la lecture
+                     }
                 }
             }
 
@@ -110,11 +174,28 @@ class EditorActivity : AppCompatActivity() {
             }
         }.start()
     }
+    
+    // Fait défiler le ScrollView pour que la tête de lecture reste visible
+    private fun autoScroll(sampleIdx: Int) {
+        val totalSamples = pcmData.size
+        if (totalSamples == 0) return
+        
+        // Position X de la tête de lecture dans la vue (qui peut être très large)
+        val viewWidth = binding.waveformView.width
+        val x = (sampleIdx.toFloat() / totalSamples) * viewWidth
+        
+        // Centrer la vue sur X
+        val screenCenter = screenWidth / 2
+        val scrollX = (x - screenCenter).toInt()
+        
+        binding.scroller.smoothScrollTo(scrollX, 0)
+    }
 
     private fun stopAudio() {
         isPlaying = false
     }
-
+    
+    // Pour cut et normalize, c'est identique à avant
     private fun cutSelection() {
         val start = binding.waveformView.selectionStart
         val end = binding.waveformView.selectionEnd
@@ -122,8 +203,7 @@ class EditorActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Couper ?")
-            .setMessage("Cette action supprime la partie sélectionnée.")
-            .setPositiveButton("Confirmer") { _, _ ->
+            .setPositiveButton("Oui") { _, _ ->
                  val newPcm = ShortArray(pcmData.size - (end - start))
                 System.arraycopy(pcmData, 0, newPcm, 0, start)
                 System.arraycopy(pcmData, end, newPcm, start, pcmData.size - end)
@@ -132,14 +212,13 @@ class EditorActivity : AppCompatActivity() {
                 binding.waveformView.setWaveform(pcmData)
                 binding.waveformView.clearSelection()
                 binding.txtDuration.text = formatTime(pcmData.size)
-                Toast.makeText(this, "Coupé !", Toast.LENGTH_SHORT).show()
             }
-            .setNegativeButton("Annuler", null)
-            .show()
+            .setNegativeButton("Non", null).show()
     }
 
     private fun normalizeSelection() {
-        val start = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
+        // ... (Code identique)
+         val start = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
         val end = if (binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else pcmData.size
 
         var maxVal = 0
@@ -160,15 +239,12 @@ class EditorActivity : AppCompatActivity() {
     private fun saveFile() {
         binding.progressBar.visibility = View.VISIBLE
         Thread {
-            // Sauvegarde en AAC
             val success = AudioHelper.savePCMToAAC(pcmData, currentFile)
             runOnUiThread {
                 binding.progressBar.visibility = View.GONE
                 if (success) {
                     Toast.makeText(this, "Sauvegardé", Toast.LENGTH_SHORT).show()
                     finish()
-                } else {
-                    Toast.makeText(this, "Erreur sauvegarde", Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()

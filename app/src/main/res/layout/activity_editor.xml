@@ -6,36 +6,50 @@
     android:orientation="vertical"
     android:background="#E0E0E0">
 
-    <TextView 
-        android:id="@+id/txtFilename" 
-        android:layout_width="match_parent" 
-        android:layout_height="wrap_content" 
-        android:padding="8dp" 
-        android:text="Fichier..."
-        android:textColor="#000000"
-        android:textSize="16sp"
-        android:textStyle="bold"/>
-
-    <TextView
-        android:id="@+id/txtDuration"
+    <!-- En-tête -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:gravity="end"
-        android:paddingEnd="16dp"
-        android:text="00:00"
-        android:textColor="#555555"
-        android:textSize="14sp"/>
+        android:orientation="horizontal"
+        android:padding="8dp"
+        android:background="#FFF"
+        android:elevation="2dp">
+        
+        <TextView 
+            android:id="@+id/txtFilename" 
+            android:layout_width="0dp" 
+            android:layout_height="wrap_content" 
+            android:layout_weight="1"
+            android:text="Fichier..."
+            android:textColor="#000"
+            android:textStyle="bold"/>
 
+        <TextView
+            android:id="@+id/txtDuration"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="00:00"
+            android:textColor="#555"/>
+    </LinearLayout>
+
+    <!-- Zone Waveform avec Scroll Horizontal pour le Zoom -->
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <com.podcastcreateur.app.WaveformView
-            android:id="@+id/waveformView"
+        <HorizontalScrollView
+            android:id="@+id/scroller"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:background="#DDDDDD"/>
+            android:fillViewport="true">
+
+            <com.podcastcreateur.app.WaveformView
+                android:id="@+id/waveformView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="#DDDDDD"/>
+        </HorizontalScrollView>
 
         <ProgressBar
             android:id="@+id/progressBar"
@@ -43,6 +57,30 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center"
             android:visibility="gone"/>
+            
+        <!-- Boutons Zoom flottants semi-transparents -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_gravity="end|center_vertical"
+            android:background="#88FFFFFF"
+            android:layout_marginEnd="8dp"
+            android:padding="4dp">
+            
+            <ImageButton
+                android:id="@+id/btnZoomIn"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_zoom_in"
+                android:background="?selectableItemBackgroundBorderless"/>
+            <ImageButton
+                android:id="@+id/btnZoomOut"
+                android:layout_width="40dp"
+                android:layout_height="40dp"
+                android:src="@drawable/ic_zoom_out"
+                android:background="?selectableItemBackgroundBorderless"/>
+        </LinearLayout>
     </FrameLayout>
 
     <!-- Barre d'outils -->
@@ -50,48 +88,60 @@
         android:layout_width="match_parent" 
         android:layout_height="wrap_content" 
         android:orientation="horizontal"
-        android:padding="8dp"
+        android:padding="4dp"
         android:gravity="center"
         android:background="#37474F">
 
-        <!-- Suppression des Tints pour voir vos icones originales -->
+        <!-- Re-Enregistrer (Nouveau) -->
+        <ImageButton 
+            android:id="@+id/btnReRecord" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
+            android:src="@drawable/ic_mic"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:padding="10dp"
+            android:tooltipText="Refaire l'enregistrement"/>
+
+        <View android:layout_width="1dp" android:layout_height="30dp" android:background="#55FFFFFF" android:layout_marginHorizontal="8dp"/>
+
         <ImageButton 
             android:id="@+id/btnPlay" 
-            android:layout_width="50dp" 
-            android:layout_height="50dp" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
             android:src="@drawable/ic_play"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:scaleType="fitCenter"
             android:padding="10dp"/>
 
-        <Space android:layout_width="16dp" android:layout_height="wrap_content"/>
+        <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
 
         <ImageButton 
             android:id="@+id/btnCut" 
-            android:layout_width="50dp" 
-            android:layout_height="50dp" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
             android:src="@drawable/ic_cut"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:scaleType="fitCenter"
             android:padding="10dp"/>
 
-        <Space android:layout_width="16dp" android:layout_height="wrap_content"/>
+        <Space android:layout_width="8dp" android:layout_height="wrap_content"/>
 
         <ImageButton 
             android:id="@+id/btnNormalize" 
-            android:layout_width="50dp" 
-            android:layout_height="50dp" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
             android:src="@drawable/ic_normalize"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:scaleType="fitCenter"
             android:padding="10dp"/>
 
-        <Space android:layout_width="16dp" android:layout_height="wrap_content"/>
+        <View android:layout_width="1dp" android:layout_height="30dp" android:background="#55FFFFFF" android:layout_marginHorizontal="8dp"/>
 
         <ImageButton 
             android:id="@+id/btnSave" 
-            android:layout_width="50dp" 
-            android:layout_height="50dp" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
             android:src="@drawable/ic_save"
             android:background="?attr/selectableItemBackgroundBorderless"
             android:scaleType="fitCenter"
