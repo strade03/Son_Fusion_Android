@@ -6,7 +6,6 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.os.Bundle
 import android.view.View
-import android.widget.HorizontalScrollView
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -19,19 +18,17 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var binding: ActivityEditorBinding
     private lateinit var currentFile: File
     private var pcmData: ShortArray = ShortArray(0)
-    private var currentSampleRate = 44100 // Stockage de la fréquence détectée
+    // On force la fréquence standard
+    private val STANDARD_SAMPLE_RATE = 44100
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false
     
-    private var zoomLevel = 1.0f
-    private var screenWidth = 0
+    private var currentZoom = 1.0f
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityEditorBinding.inflate(layoutInflater)
         setContentView(binding.root)
-
-        screenWidth = resources.displayMetrics.widthPixels
 
         val path = intent.getStringExtra("FILE_PATH")
         if (path == null) { finish(); return }
@@ -47,9 +44,15 @@ class EditorActivity : AppCompatActivity() {
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
         binding.btnSave.setOnClickListener { saveFile() }
         
-        // Zoom sans Toast
-        binding.btnZoomIn.setOnClickListener { applyZoom(zoomLevel * 1.5f) }
-        binding.btnZoomOut.setOnClickListener { applyZoom(zoomLevel / 1.5f) }
+        // Utilisation de la nouvelle méthode de zoom
+        binding.btnZoomIn.setOnClickListener { 
+            currentZoom *= 1.5f
+            binding.waveformView.setZoomLevel(currentZoom)
+        }
+        binding.btnZoomOut.setOnClickListener { 
+            currentZoom /= 1.5f
+            binding.waveformView.setZoomLevel(currentZoom)
+        }
         
         binding.btnReRecord.setOnClickListener {
             AlertDialog.Builder(this)
@@ -76,32 +79,12 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyZoom(newZoom: Float) {
-        val clamped = newZoom.coerceIn(1.0f, 20.0f) // Augmenter max zoom
-        if (abs(clamped - zoomLevel) < 0.05f) return
-        
-        zoomLevel = clamped
-        
-        // Calcul nouvelle largeur
-        val newWidth = (screenWidth * zoomLevel).toInt()
-        
-        // On applique directement au layoutParams
-        val params = binding.waveformView.layoutParams
-        params.width = newWidth
-        binding.waveformView.layoutParams = params
-        
-        // On force la vue à se redessiner
-        binding.waveformView.invalidate()
-        binding.waveformView.requestLayout()
-    }
-
     private fun loadWaveform() {
         Thread {
             try {
-                // Utilisation de la nouvelle méthode qui renvoie data + sampleRate
+                // AudioHelper convertit maintenant tout en 44100Hz
                 val content = AudioHelper.decodeToPCM(currentFile)
                 pcmData = content.data
-                currentSampleRate = content.sampleRate // On stocke la fréquence réelle
                 
                 runOnUiThread {
                     binding.waveformView.setWaveform(pcmData)
@@ -115,8 +98,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun formatTime(samples: Int): String {
-        if (currentSampleRate == 0) return "00:00"
-        val sec = samples / currentSampleRate // Utilisation fréquence réelle
+        val sec = samples / STANDARD_SAMPLE_RATE 
         val m = sec / 60
         val s = sec % 60
         return String.format("%02d:%02d", m, s)
@@ -128,11 +110,11 @@ class EditorActivity : AppCompatActivity() {
         binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
 
         Thread {
-            // Configuration AudioTrack avec la fréquence réelle du fichier
-            val minBuf = AudioTrack.getMinBufferSize(currentSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+            // Configuration AudioTrack standardisée
+            val minBuf = AudioTrack.getMinBufferSize(STANDARD_SAMPLE_RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             audioTrack = AudioTrack(
                 AudioManager.STREAM_MUSIC, 
-                currentSampleRate, // ICI : 44100 ou 48000 selon le fichier
+                STANDARD_SAMPLE_RATE,
                 AudioFormat.CHANNEL_OUT_MONO, 
                 AudioFormat.ENCODING_PCM_16BIT, 
                 minBuf, 
@@ -153,8 +135,7 @@ class EditorActivity : AppCompatActivity() {
                 audioTrack?.write(pcmData, offset, len)
                 offset += len
                 
-                // Mise à jour UI moins fréquente pour performance
-                if (offset % (currentSampleRate / 5) == 0) { 
+                if (offset % (STANDARD_SAMPLE_RATE / 5) == 0) { 
                      runOnUiThread { 
                          binding.waveformView.playheadPos = offset
                          binding.waveformView.invalidate()
@@ -179,12 +160,11 @@ class EditorActivity : AppCompatActivity() {
         val totalSamples = pcmData.size
         if (totalSamples == 0) return
         
-        // Largeur actuelle de la vue (qui peut être très grande si zoomée)
         val viewWidth = binding.waveformView.width 
-        val x = (sampleIdx.toFloat() / totalSamples) * viewWidth
+        val screenW = resources.displayMetrics.widthPixels
         
-        // On centre
-        val scrollX = (x - screenWidth / 2).toInt()
+        val x = (sampleIdx.toFloat() / totalSamples) * viewWidth
+        val scrollX = (x - screenW / 2).toInt()
         
         binding.scroller.smoothScrollTo(scrollX, 0)
     }
@@ -235,8 +215,8 @@ class EditorActivity : AppCompatActivity() {
     private fun saveFile() {
         binding.progressBar.visibility = View.VISIBLE
         Thread {
-            // On sauvegarde avec la même fréquence que le fichier source pour ne pas altérer la vitesse
-            val success = AudioHelper.savePCMToAAC(pcmData, currentFile, currentSampleRate)
+            // Sauvegarde toujours en 44100Hz
+            val success = AudioHelper.savePCMToAAC(pcmData, currentFile, STANDARD_SAMPLE_RATE)
             runOnUiThread {
                 binding.progressBar.visibility = View.GONE
                 if (success) {
