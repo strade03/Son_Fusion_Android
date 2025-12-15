@@ -6,14 +6,7 @@
     android:background="#FAFAFA">
 
     <!-- Zone du Script (Scrollable) -->
-    <TextView
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:padding="16dp"
-        android:text="Script :"
-        android:textStyle="bold"
-        android:textColor="#555"/>
-
+    <!-- Le poids (weight) de 1 permet d'occuper tout l'espace restant -->
     <ScrollView
         android:layout_width="match_parent"
         android:layout_height="0dp"
@@ -37,27 +30,30 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="vertical"
+        android:orientation="horizontal"
         android:gravity="center"
-        android:padding="20dp"
+        android:padding="10dp"
         android:background="#EEE">
 
+        <!-- Bouton à gauche -->
+        <ImageButton
+            android:id="@+id/btnRecordToggle"
+            android:layout_width="80dp"
+            android:layout_height="80dp"
+            android:src="@drawable/ic_record"
+            android:background="?selectableItemBackgroundBorderless"
+            android:scaleType="fitCenter"
+            android:contentDescription="Enregistrer"/>
+
+        <!-- Chronomètre à droite avec une marge pour l'espacement -->
         <Chronometer
             android:id="@+id/chronometer"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="50sp"
             android:textColor="#212121"
-            android:layout_marginBottom="20dp"/>
-
-        <ImageButton
-            android:id="@+id/btnRecordToggle"
-            android:layout_width="100dp"
-            android:layout_height="100dp"
-            android:src="@drawable/ic_record"
-            android:background="?selectableItemBackgroundBorderless"
-            android:scaleType="fitCenter"
-            android:contentDescription="Enregistrer"/>
+            android:layout_marginStart="24dp"/>
+            
     </LinearLayout>
         
 </LinearLayout>
