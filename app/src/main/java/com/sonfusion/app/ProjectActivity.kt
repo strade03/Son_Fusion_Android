@@ -48,7 +48,7 @@ class ProjectActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         val projectName = intent.getStringExtra("PROJECT_NAME") ?: return finish()
-        binding.txtProjectTitle.text = "Émission : $projectName"
+        binding.txtProjectTitle.text = "$projectName"
 
         val root = File(getExternalFilesDir(null), "Emissions")
         projectDir = File(root, projectName)
