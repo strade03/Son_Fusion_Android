@@ -33,6 +33,7 @@
         
         <activity android:name=".RecorderActivity" android:screenOrientation="portrait"/>
         <activity android:name=".EditorActivity" android:screenOrientation="landscape"/>
+        <activity android:name=".ScriptEditorActivity" android:screenOrientation="portrait"/>
     </application>
 
 </manifest>

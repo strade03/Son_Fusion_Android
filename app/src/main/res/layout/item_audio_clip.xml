@@ -15,7 +15,7 @@
         android:padding="8dp"
         android:gravity="center_vertical">
 
-        <!-- Poignée de déplacement (visuel) -->
+        <!-- Poignée de déplacement -->
         <ImageView
             android:id="@+id/btnItemDrag"
             android:layout_width="32dp"
@@ -23,41 +23,72 @@
             android:src="@drawable/ic_menu_reorder" 
             android:alpha="0.5"
             android:contentDescription="Drag handle"/>
-            <!-- Note : ic_menu_reorder doit être ajouté ou utiliser une image existante -->
 
-        <TextView
-            android:id="@+id/txtClipName"
+        <LinearLayout
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="Clip Audio"
-            android:textSize="16sp"
-            android:textColor="#000"
-            android:maxLines="1"
-            android:ellipsize="end"
-            android:layout_marginStart="10dp"/>
+            android:orientation="vertical"
+            android:layout_marginStart="10dp">
+            
+            <TextView
+                android:id="@+id/txtClipName"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Nom Chronique"
+                android:textSize="16sp"
+                android:textStyle="bold"
+                android:textColor="#000"
+                android:maxLines="1"
+                android:ellipsize="end"/>
 
-        <!-- Actions : On utilise SRC sans TINT pour garder les couleurs originales de vos icônes -->
+            <!-- Indicateurs visuels -->
+            <TextView
+                android:id="@+id/txtStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Script vide • Pas d'audio"
+                android:textSize="12sp"
+                android:textColor="#757575"/>
+        </LinearLayout>
+
+        <!-- 1. Script (Toujours actif) -->
         <ImageButton 
-            android:id="@+id/btnItemEdit" 
+            android:id="@+id/btnItemScript" 
+            android:layout_width="44dp" 
+            android:layout_height="44dp" 
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_script" 
+            android:background="?selectableItemBackgroundBorderless" 
+            android:tooltipText="Éditer le script"
+            android:contentDescription="Script"/>
+
+        <!-- 2. Enregistrer (Micro) -->
+        <ImageButton 
+            android:id="@+id/btnItemRecord" 
+            android:layout_width="48dp" 
+            android:layout_height="48dp" 
+            android:padding="10dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/ic_record" 
+            android:background="?selectableItemBackgroundBorderless" 
+            android:tooltipText="Enregistrer l'audio"
+            android:contentDescription="Record"/>
+
+        <!-- 3. Éditer Audio (Visible seulement si audio existe) -->
+        <ImageButton 
+            android:id="@+id/btnItemEditAudio" 
             android:layout_width="48dp" 
             android:layout_height="48dp" 
             android:padding="10dp"
             android:scaleType="fitCenter"
             android:src="@drawable/ic_edit" 
             android:background="?selectableItemBackgroundBorderless" 
-            android:contentDescription="Edit"/>
+            android:tooltipText="Couper/Monter"
+            android:contentDescription="Edit Audio"/>
             
-        <ImageButton 
-            android:id="@+id/btnItemDuplicate" 
-            android:layout_width="48dp" 
-            android:layout_height="48dp" 
-            android:padding="10dp"
-            android:scaleType="fitCenter"
-            android:src="@drawable/ic_duplicate" 
-            android:background="?selectableItemBackgroundBorderless" 
-            android:contentDescription="Duplicate"/>
-            
+        <!-- 4. Options / Supprimer -->
         <ImageButton 
             android:id="@+id/btnItemDelete" 
             android:layout_width="48dp" 
@@ -66,7 +97,7 @@
             android:scaleType="fitCenter"
             android:src="@drawable/ic_delete" 
             android:background="?selectableItemBackgroundBorderless" 
-            android:contentDescription="Delete"/>
+            android:contentDescription="Delete"/>            
 
     </LinearLayout>
 </androidx.cardview.widget.CardView>
