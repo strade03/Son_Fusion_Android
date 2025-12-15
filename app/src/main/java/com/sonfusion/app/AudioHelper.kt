@@ -15,7 +15,7 @@ object AudioHelper {
 
     /**
      * Décode le fichier et renvoie les données BRUTES avec leur fréquence d'origine.
-     * On ne force plus le 44100Hz ici pour éviter les problèmes de vitesse dans l'éditeur.
+     * CORRECTION : Meilleure gestion de la fréquence d'échantillonnage
      */
     fun decodeToPCM(input: File): AudioContent {
         if (!input.exists()) return AudioContent(ShortArray(0), 44100)
@@ -24,6 +24,7 @@ object AudioHelper {
         try {
             extractor.setDataSource(input.absolutePath)
         } catch (e: Exception) {
+            e.printStackTrace()
             return AudioContent(ShortArray(0), 44100)
         }
 
@@ -40,23 +41,34 @@ object AudioHelper {
             }
         }
 
-        if (trackIndex < 0 || format == null) return AudioContent(ShortArray(0), 44100)
+        if (trackIndex < 0 || format == null) {
+            extractor.release()
+            return AudioContent(ShortArray(0), 44100)
+        }
 
-        // On récupère la vraie fréquence du fichier (ex: 48000 ou 44100)
-        val sourceSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
+        // CORRECTION : Récupération fiable de la fréquence d'échantillonnage
+        val sourceSampleRate = try {
             format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-        } else {
+        } catch (e: Exception) {
+            // Si la clé n'existe pas, on essaie de l'extraire du format de sortie du décodeur
             44100
         }
 
         extractor.selectTrack(trackIndex)
-        val mime = format.getString(MediaFormat.KEY_MIME) ?: return AudioContent(ShortArray(0), 44100)
+        val mime = format.getString(MediaFormat.KEY_MIME) ?: run {
+            extractor.release()
+            return AudioContent(ShortArray(0), 44100)
+        }
+        
         val decoder = MediaCodec.createDecoderByType(mime)
         decoder.configure(format, null, null, 0)
         decoder.start()
 
         val bufferInfo = MediaCodec.BufferInfo()
         val pcmData = java.io.ByteArrayOutputStream()
+        
+        // CORRECTION : Variable pour capturer la vraie fréquence du décodeur
+        var actualSampleRate = sourceSampleRate
         
         try {
             var isEOS = false
@@ -65,18 +77,31 @@ object AudioHelper {
                     val inIndex = decoder.dequeueInputBuffer(1000)
                     if (inIndex >= 0) {
                         val inBuffer = decoder.getInputBuffer(inIndex)
-                        val sampleSize = extractor.readSampleData(inBuffer!!, 0)
-                        if (sampleSize < 0) {
-                            decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            isEOS = true
-                        } else {
-                            decoder.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
-                            extractor.advance()
+                        if (inBuffer != null) {
+                            val sampleSize = extractor.readSampleData(inBuffer, 0)
+                            if (sampleSize < 0) {
+                                decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isEOS = true
+                            } else {
+                                decoder.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
                         }
                     }
                 }
 
                 val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 1000)
+                
+                // CORRECTION : Capturer le format de sortie réel du décodeur
+                if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    val outputFormat = decoder.outputFormat
+                    actualSampleRate = try {
+                        outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    } catch (e: Exception) {
+                        sourceSampleRate
+                    }
+                }
+                
                 if (outIndex >= 0) {
                     val outBuffer = decoder.getOutputBuffer(outIndex)
                     if (outBuffer != null && bufferInfo.size > 0) {
@@ -94,20 +119,20 @@ object AudioHelper {
         } catch (e: Exception) {
             e.printStackTrace()
         } finally {
-            try { decoder.stop(); decoder.release() } catch(e:Exception){}
-            try { extractor.release() } catch(e:Exception){}
+            try { decoder.stop(); decoder.release() } catch(e: Exception) { e.printStackTrace() }
+            try { extractor.release() } catch(e: Exception) { e.printStackTrace() }
         }
 
         val bytes = pcmData.toByteArray()
         val shorts = ShortArray(bytes.size / 2)
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         
-        // Retourne le son tel quel, sans modification
-        return AudioContent(shorts, sourceSampleRate)
+        // Retourne le son avec la VRAIE fréquence détectée
+        return AudioContent(shorts, actualSampleRate)
     }
 
     /**
-     * Interpolation linéaire simple pour changer la vitesse/fréquence si nécessaire lors de la fusion
+     * Interpolation linéaire pour changer la vitesse/fréquence
      */
     private fun resample(input: ShortArray, currentRate: Int, targetRate: Int): ShortArray {
         if (currentRate == targetRate) return input
@@ -204,8 +229,8 @@ object AudioHelper {
             e.printStackTrace()
             return false
         } finally {
-            try { encoder?.stop(); encoder?.release() } catch(e:Exception){}
-            try { muxer?.stop(); muxer?.release() } catch(e:Exception){}
+            try { encoder?.stop(); encoder?.release() } catch(e: Exception) { e.printStackTrace() }
+            try { muxer?.stop(); muxer?.release() } catch(e: Exception) { e.printStackTrace() }
         }
     }
 
