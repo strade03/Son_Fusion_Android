@@ -95,30 +95,42 @@ class HomeActivity : AppCompatActivity() {
         val dialog = AlertDialog.Builder(this)
             .setTitle("Nouvelle émission")
             .setView(container)
-            .setPositiveButton("Créer") { _, _ ->
-                val name = input.text.toString().trim()
-                if (name.isNotEmpty()) {
-                    val safeName = name.replace(Regex("[^a-zA-Z0-9 _-]"), "") 
-                    val projDir = File(rootDir, safeName)
-                    if (projDir.exists()) {
-                        Toast.makeText(this, "Existe déjà", Toast.LENGTH_SHORT).show()
-                    } else {
-                        projDir.mkdirs()
-                        refreshList()
-                        val intent = Intent(this, ProjectActivity::class.java)
-                        intent.putExtra("PROJECT_NAME", safeName)
-                        startActivity(intent)
-                    }
-                }
-            }
+            // On met null ici pour gérer le clic nous-mêmes plus bas
+            .setPositiveButton("Créer", null) 
             .setNegativeButton("Annuler", null)
-            .create() 
+            .create()
 
-        // Cette ligne force l'affichage du clavier à l'ouverture
+        // Clavier visible
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         
         dialog.show()
         input.requestFocus()
+
+        // GESTION DU BOUTON (pour empêcher la fermeture automatique)
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            val name = input.text.toString().trim()
+            if (name.isNotEmpty()) {
+                // MODIFICATION REGEX : \\p{L} accepte les caractères accentués (é, è, à...)
+                val safeName = name.replace(Regex("[^\\p{L}0-9 _-]"), "") 
+                
+                val projDir = File(rootDir, safeName)
+                if (projDir.exists()) {
+                    // Erreur : on affiche le message mais on NE ferme PAS la fenêtre
+                    Toast.makeText(this, "Ce nom existe déjà", Toast.LENGTH_SHORT).show()
+                } else {
+                    // Succès : on crée et on ferme la fenêtre
+                    projDir.mkdirs()
+                    refreshList()
+                    dialog.dismiss() // Fermeture manuelle ici
+                    
+                    val intent = Intent(this, ProjectActivity::class.java)
+                    intent.putExtra("PROJECT_NAME", safeName)
+                    startActivity(intent)
+                }
+            } else {
+                Toast.makeText(this, "Le nom ne peut pas être vide", Toast.LENGTH_SHORT).show()
+            }
+        }
     }
 
     private fun showDeleteDialog(dir: File) {

@@ -53,6 +53,7 @@ class RecorderActivity : AppCompatActivity() {
         
         val defaultName = "Ma chronique_" + System.currentTimeMillis()/1000
         input.setText(defaultName)
+        input.selectAll() 
 
         val container = android.widget.FrameLayout(this)
         val params = android.widget.FrameLayout.LayoutParams(
@@ -67,21 +68,36 @@ class RecorderActivity : AppCompatActivity() {
             .setTitle("Nouvel enregistrement")
             .setView(container)
             .setCancelable(false)
-            .setPositiveButton("OK") { _, _ ->
-                var name = input.text.toString().trim()
-                if (name.isEmpty()) name = "son_" + System.currentTimeMillis()/1000
-                customFileName = name.replace(Regex("[^a-zA-Z0-9 _-]"), "")
-            }
+            .setPositiveButton("OK", null) // Null ici
             .setNegativeButton("Annuler") { _, _ ->
                 finish()
             }
             .create()
 
-        // Force l'affichage du clavier
         dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
         
         dialog.show()
         input.requestFocus()
+
+        // GESTION MANUELLE DU BOUTON OK
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+            var name = input.text.toString().trim()
+            if (name.isEmpty()) name = "son_" + System.currentTimeMillis()/1000
+            
+            // Regex qui accepte les accents
+            val safeName = name.replace(Regex("[^\\p{L}0-9 _-]"), "")
+            
+            // Vérification si le fichier existe déjà
+            val potentialFile = File(projectPath, "999_" + safeName + ".wav")
+            
+            if (potentialFile.exists()) {
+                 Toast.makeText(this, "Ce nom existe déjà dans l'émission", Toast.LENGTH_SHORT).show()
+                 // On ne fait rien d'autre, la fenêtre reste ouverte
+            } else {
+                customFileName = safeName
+                dialog.dismiss() // Tout est bon, on ferme
+            }
+        }
     }
 
     @SuppressLint("MissingPermission")
