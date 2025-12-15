@@ -63,24 +63,25 @@ class RecorderActivity : AppCompatActivity() {
         input.layoutParams = params
         container.addView(input)
 
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Nouvel enregistrement")
             .setView(container)
             .setCancelable(false)
-            // Astuce pour le focus clavier
-            .setOnWindowFocusChangedListener { hasFocus ->
-                if (hasFocus) input.requestFocus()
-            }
             .setPositiveButton("OK") { _, _ ->
                 var name = input.text.toString().trim()
-                // Si l'utilisateur vide le champ, on remet une valeur par défaut avec timestamp pour éviter les bugs
                 if (name.isEmpty()) name = "son_" + System.currentTimeMillis()/1000
                 customFileName = name.replace(Regex("[^a-zA-Z0-9 _-]"), "")
             }
             .setNegativeButton("Annuler") { _, _ ->
                 finish()
             }
-            .show()
+            .create()
+
+        // Force l'affichage du clavier
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        
+        dialog.show()
+        input.requestFocus()
     }
 
     @SuppressLint("MissingPermission")

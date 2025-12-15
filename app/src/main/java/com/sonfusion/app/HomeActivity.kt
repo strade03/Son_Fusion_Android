@@ -92,13 +92,9 @@ class HomeActivity : AppCompatActivity() {
         input.layoutParams = params
         container.addView(input)
 
-        AlertDialog.Builder(this)
+        val dialog = AlertDialog.Builder(this)
             .setTitle("Nouvelle émission")
             .setView(container)
-            // Pour que le clavier s'ouvre et que le focus soit mis (astuce UX)
-            .setOnWindowFocusChangedListener { hasFocus ->
-                if (hasFocus) input.requestFocus()
-            }
             .setPositiveButton("Créer") { _, _ ->
                 val name = input.text.toString().trim()
                 if (name.isNotEmpty()) {
@@ -116,7 +112,13 @@ class HomeActivity : AppCompatActivity() {
                 }
             }
             .setNegativeButton("Annuler", null)
-            .show()
+            .create() 
+
+        // Cette ligne force l'affichage du clavier à l'ouverture
+        dialog.window?.setSoftInputMode(android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE)
+        
+        dialog.show()
+        input.requestFocus()
     }
 
     private fun showDeleteDialog(dir: File) {
