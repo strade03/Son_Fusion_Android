@@ -11,21 +11,20 @@ data class AudioContent(
 )
 
 object AudioHelper {
-    // On standardise tout sur 44100Hz pour éviter les conflits de vitesse
-    const val TARGET_SAMPLE_RATE = 44100 
     private const val BIT_RATE = 128000
 
     /**
-     * Décode n'importe quel fichier audio et le convertit systématiquement en 44100Hz PCM
+     * Décode le fichier et renvoie les données BRUTES avec leur fréquence d'origine.
+     * On ne force plus le 44100Hz ici pour éviter les problèmes de vitesse dans l'éditeur.
      */
     fun decodeToPCM(input: File): AudioContent {
-        if (!input.exists()) return AudioContent(ShortArray(0), TARGET_SAMPLE_RATE)
+        if (!input.exists()) return AudioContent(ShortArray(0), 44100)
         
         val extractor = MediaExtractor()
         try {
             extractor.setDataSource(input.absolutePath)
         } catch (e: Exception) {
-            return AudioContent(ShortArray(0), TARGET_SAMPLE_RATE)
+            return AudioContent(ShortArray(0), 44100)
         }
 
         var trackIndex = -1
@@ -41,26 +40,26 @@ object AudioHelper {
             }
         }
 
-        if (trackIndex < 0 || format == null) return AudioContent(ShortArray(0), TARGET_SAMPLE_RATE)
+        if (trackIndex < 0 || format == null) return AudioContent(ShortArray(0), 44100)
 
-        // Récupération du sample rate d'origine du fichier
+        // On récupère la vraie fréquence du fichier (ex: 48000 ou 44100)
         val sourceSampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) {
             format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
         } else {
-            TARGET_SAMPLE_RATE
+            44100
         }
 
         extractor.selectTrack(trackIndex)
-        val mime = format.getString(MediaFormat.KEY_MIME) ?: return AudioContent(ShortArray(0), TARGET_SAMPLE_RATE)
+        val mime = format.getString(MediaFormat.KEY_MIME) ?: return AudioContent(ShortArray(0), 44100)
         val decoder = MediaCodec.createDecoderByType(mime)
         decoder.configure(format, null, null, 0)
         decoder.start()
 
         val bufferInfo = MediaCodec.BufferInfo()
         val pcmData = java.io.ByteArrayOutputStream()
-        var isEOS = false
-
+        
         try {
+            var isEOS = false
             while (true) {
                 if (!isEOS) {
                     val inIndex = decoder.dequeueInputBuffer(1000)
@@ -103,20 +102,16 @@ object AudioHelper {
         val shorts = ShortArray(bytes.size / 2)
         ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
         
-        // --- CORRECTION MAJEURE : RÉ-ÉCHANTILLONNAGE ---
-        // Si le fichier n'est pas en 44100Hz, on le convertit.
-        return if (sourceSampleRate != TARGET_SAMPLE_RATE) {
-            val resampled = resample(shorts, sourceSampleRate, TARGET_SAMPLE_RATE)
-            AudioContent(resampled, TARGET_SAMPLE_RATE)
-        } else {
-            AudioContent(shorts, TARGET_SAMPLE_RATE)
-        }
+        // Retourne le son tel quel, sans modification
+        return AudioContent(shorts, sourceSampleRate)
     }
 
     /**
-     * Algorithme simple d'interpolation linéaire pour changer la fréquence
+     * Interpolation linéaire simple pour changer la vitesse/fréquence si nécessaire lors de la fusion
      */
     private fun resample(input: ShortArray, currentRate: Int, targetRate: Int): ShortArray {
+        if (currentRate == targetRate) return input
+        
         val ratio = currentRate.toDouble() / targetRate.toDouble()
         val outputSize = (input.size / ratio).toInt()
         val output = ShortArray(outputSize)
@@ -130,17 +125,13 @@ object AudioHelper {
                 val fraction = position - index
                 val val1 = input[index]
                 val val2 = input[index + 1]
-                // Interpolation
                 output[i] = (val1 + fraction * (val2 - val1)).toInt().toShort()
             }
         }
         return output
     }
 
-    /**
-     * Encode en AAC 44100Hz mono
-     */
-    fun savePCMToAAC(pcmData: ShortArray, outputFile: File, sampleRate: Int = TARGET_SAMPLE_RATE): Boolean {
+    fun savePCMToAAC(pcmData: ShortArray, outputFile: File, sampleRate: Int): Boolean {
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
 
@@ -192,7 +183,6 @@ object AudioHelper {
 
                 val outIndex = encoder.dequeueOutputBuffer(outputBufferInfo, 1000)
                 if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    if (muxerStarted) throw RuntimeException("Format changed twice")
                     val newFormat = encoder.outputFormat
                     audioTrackIndex = muxer.addTrack(newFormat)
                     muxer.start()
@@ -219,22 +209,42 @@ object AudioHelper {
         }
     }
 
+    /**
+     * Fusion Intelligente : Prend la fréquence du premier fichier comme Maître.
+     * Si un fichier suivant a une fréquence différente, on le convertit.
+     */
     fun mergeFiles(inputs: List<File>, output: File): Boolean {
         if (inputs.isEmpty()) return false
         try {
             val allSamples = ArrayList<Short>()
+            var masterSampleRate = 44100
+            var isFirst = true
             
-            // Grâce au decodeToPCM corrigé, toutes les données arrivent en 44100Hz.
-            // On peut donc concaténer sans se soucier du pitch.
             for (file in inputs) {
                 val content = decodeToPCM(file)
-                for (s in content.data) allSamples.add(s)
+                
+                if (isFirst) {
+                    // Le premier fichier dicte la loi
+                    masterSampleRate = content.sampleRate
+                    for (s in content.data) allSamples.add(s)
+                    isFirst = false
+                } else {
+                    // Les suivants doivent s'adapter
+                    if (content.sampleRate != masterSampleRate) {
+                        // On convertit pour matcher le maitre
+                        val resampledData = resample(content.data, content.sampleRate, masterSampleRate)
+                        for (s in resampledData) allSamples.add(s)
+                    } else {
+                        // Fréquence identique, on ajoute direct
+                        for (s in content.data) allSamples.add(s)
+                    }
+                }
             }
             
             val finalData = ShortArray(allSamples.size)
             for (i in allSamples.indices) finalData[i] = allSamples[i]
             
-            return savePCMToAAC(finalData, output, TARGET_SAMPLE_RATE)
+            return savePCMToAAC(finalData, output, masterSampleRate)
         } catch (e: Exception) {
             e.printStackTrace()
             return false

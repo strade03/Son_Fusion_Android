@@ -14,8 +14,6 @@ class WaveformView @JvmOverloads constructor(
 ) : View(context, attrs) {
 
     private var samples: ShortArray = ShortArray(0)
-    
-    // Niveau de zoom interne (1.0 = largeur de l'écran)
     private var zoomFactor = 1.0f 
     
     private val paint = Paint().apply {
@@ -42,27 +40,24 @@ class WaveformView @JvmOverloads constructor(
         invalidate()
     }
     
-    // Nouvelle méthode pour gérer le zoom proprement
+    // Méthode appelée par EditorActivity
     fun setZoomLevel(factor: Float) {
-        zoomFactor = factor.coerceIn(1.0f, 20.0f)
-        requestLayout() // Déclenche onMeasure
-        invalidate()
+        zoomFactor = factor
+        requestLayout() // Force le recalcul de la taille (onMeasure)
+        invalidate()    // Force le redessin (onDraw)
     }
 
     fun clearSelection() { 
-        selectionStart = -1; 
-        selectionEnd = -1; 
-        invalidate() 
+        selectionStart = -1; selectionEnd = -1; invalidate() 
     }
 
-    // C'est ici que la magie du zoom opère
+    // Calcul de la taille de la vue en fonction du Zoom
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val screenWidth = resources.displayMetrics.widthPixels
         
-        // La largeur désirée est la largeur écran * facteur de zoom
+        // Largeur désirée = Largeur Ecran * Zoom
         val desiredWidth = (screenWidth * zoomFactor).toInt()
         
-        // On s'assure que ce n'est pas moins que la taille proposée par le parent
         val finalWidth = resolveSize(desiredWidth, widthMeasureSpec)
         val finalHeight = getDefaultSize(suggestedMinimumHeight, heightMeasureSpec)
         
@@ -77,6 +72,7 @@ class WaveformView @JvmOverloads constructor(
         val h = height.toFloat()
         val centerY = h / 2f
         
+        // Combien de samples pour 1 pixel ?
         val samplesPerPixel = (samples.size / w).coerceAtLeast(0.1f) 
 
         for (i in 0 until width) {
