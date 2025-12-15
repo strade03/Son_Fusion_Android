@@ -25,10 +25,10 @@ import java.util.Locale
 
 // Data class pour représenter une chronique
 data class Chronicle(
-    val prefix: String, // ex: "001_"
-    val name: String,   // ex: "Intro"
-    val audioFile: File?, // Peut être null
-    val scriptFile: File // Toujours présent (même vide)
+    val prefix: String, 
+    val name: String,   
+    val audioFile: File?, 
+    val scriptFile: File 
 )
 
 class ProjectActivity : AppCompatActivity() {
@@ -55,7 +55,6 @@ class ProjectActivity : AppCompatActivity() {
 
         setupRecycler()
 
-        // Changement : Bouton "Nouvelle Chronique" au lieu de "Enregistrer"
         binding.btnRecordNew.text = "Nouvelle Chronique"
         binding.btnRecordNew.setOnClickListener { showNewChronicleDialog() }
 
@@ -95,11 +94,7 @@ class ProjectActivity : AppCompatActivity() {
         chronicleList.clear()
         val allFiles = projectDir.listFiles() ?: return
         
-        // On regroupe les fichiers par leur préfixe+nom
-        // Structure attendue : "001_NomChronique.txt" et optionnellement "001_NomChronique.m4a"
-        
-        val map = HashMap<String, File>() // Key: "001_Nom", Value: TxtFile
-        
+        val map = HashMap<String, File>() 
         allFiles.filter { it.name.endsWith(".txt") }.forEach { 
             map[it.name.removeSuffix(".txt")] = it 
         }
@@ -108,7 +103,6 @@ class ProjectActivity : AppCompatActivity() {
         
         sortedKeys.forEach { key ->
             val txtFile = map[key]!!
-            // On cherche s'il y a un audio associé (m4a, wav, mp3)
             val audioM4a = File(projectDir, "$key.m4a")
             val audioWav = File(projectDir, "$key.wav")
             val audioMp3 = File(projectDir, "$key.mp3")
@@ -118,7 +112,6 @@ class ProjectActivity : AppCompatActivity() {
             else if (audioWav.exists()) audioFile = audioWav
             else if (audioMp3.exists()) audioFile = audioMp3
 
-            // Parsing du nom
             val match = Regex("^(\\d{3}_)(.*)").find(key)
             if (match != null) {
                 val (prefix, name) = match.destructured
@@ -145,7 +138,7 @@ class ProjectActivity : AppCompatActivity() {
         val dialog = AlertDialog.Builder(this)
             .setTitle("Ajouter une chronique")
             .setView(container)
-            .setPositiveButton("Ajouter", null)
+            .setPositiveButton("Ajouter", null) // Null pour gérer manuellement
             .setNegativeButton("Annuler", null)
             .create()
 
@@ -153,16 +146,28 @@ class ProjectActivity : AppCompatActivity() {
         dialog.show()
         input.requestFocus()
 
+        // Gestion manuelle pour empêcher la fermeture si doublon
         dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-            val name = input.text.toString().trim()
-            if (name.isNotEmpty()) {
-                val safeName = name.replace(Regex("[^\\p{L}0-9 _-]"), "")
+            val rawName = input.text.toString().trim()
+            if (rawName.isEmpty()) {
+                Toast.makeText(this, "Le nom ne peut pas être vide", Toast.LENGTH_SHORT).show()
+                return@setOnClickListener
+            }
+
+            val safeName = rawName.replace(Regex("[^\\p{L}0-9 _-]"), "")
+            
+            // 1. VÉRIFICATION DOUBLON
+            val exists = chronicleList.any { it.name.equals(safeName, ignoreCase = true) }
+            if (exists) {
+                Toast.makeText(this, "Une chronique porte déjà ce nom", Toast.LENGTH_SHORT).show()
+                // On ne ferme pas la fenêtre
+            } else {
+                // Création
                 val index = chronicleList.size
                 val prefix = String.format("%03d_", index)
                 
-                // On crée juste le fichier script (vide) pour matérialiser la ligne
                 val txtFile = File(projectDir, "$prefix$safeName.txt")
-                if (!txtFile.exists()) txtFile.writeText("")
+                if (!txtFile.exists()) txtFile.writeText("") // Script vide par défaut
                 
                 refreshList()
                 dialog.dismiss()
@@ -171,21 +176,16 @@ class ProjectActivity : AppCompatActivity() {
     }
 
     private fun saveOrderOnDisk() {
-        // Renomme les fichiers (txt et audio) pour correspondre au nouvel ordre
         val tempRenames = ArrayList<Pair<File, File>>()
-        
         chronicleList.forEachIndexed { index, item ->
             val newPrefix = String.format("%03d_", index)
-            val oldKey = item.prefix + item.name
             val newKey = newPrefix + item.name
             
             if (item.prefix != newPrefix) {
-                // Renommer script
                 val oldTxt = item.scriptFile
                 val newTxt = File(projectDir, "$newKey.txt")
                 if(oldTxt.exists()) tempRenames.add(oldTxt to newTxt)
                 
-                // Renommer audio
                 item.audioFile?.let { oldAudio ->
                     val ext = "." + oldAudio.extension
                     val newAudio = File(projectDir, "$newKey$ext")
@@ -193,8 +193,6 @@ class ProjectActivity : AppCompatActivity() {
                 }
             }
         }
-        
-        // Exécuter les renommages
         tempRenames.forEach { (old, new) -> old.renameTo(new) }
         refreshList()
     }
@@ -211,16 +209,22 @@ class ProjectActivity : AppCompatActivity() {
                 val extension = fileName.substringAfterLast('.', "mp3")
                 val cleanName = fileName.substringBeforeLast('.').replace(Regex("[^a-zA-Z0-9 ._-]"), "")
                 
+                // Vérif doublon (simple ajout d'un timestamp si doublon à l'import)
+                var finalName = cleanName
+                if (chronicleList.any { it.name.equals(finalName, ignoreCase = true) }) {
+                    finalName += "_" + System.currentTimeMillis()
+                }
+
                 val index = String.format("%03d_", chronicleList.size)
-                val destAudio = File(projectDir, "$index$cleanName.$extension")
-                val destScript = File(projectDir, "$index$cleanName.txt")
+                val destAudio = File(projectDir, "$index$finalName.$extension")
+                val destScript = File(projectDir, "$index$finalName.txt")
                 
-                // Copie Audio
                 contentResolver.openInputStream(uri)?.use { input ->
                     FileOutputStream(destAudio).use { output -> input.copyTo(output) }
                 }
-                // Création Script associé
-                if (!destScript.exists()) destScript.writeText("Script importé pour $cleanName")
+                
+                // 3. CRÉATION SCRIPT VIDE (ne rien écrire dedans)
+                if (!destScript.exists()) destScript.createNewFile()
 
                 runOnUiThread {
                     refreshList()
@@ -239,6 +243,24 @@ class ProjectActivity : AppCompatActivity() {
     }
 
     fun onRecord(item: Chronicle) {
+        // 2. CONFIRMATION ÉCRASEMENT
+        if (item.audioFile != null && item.audioFile.exists()) {
+            AlertDialog.Builder(this)
+                .setTitle("Ré-enregistrer ?")
+                .setMessage("Un enregistrement audio existe déjà pour '${item.name}'. Voulez-vous l'écraser ?")
+                .setPositiveButton("Oui, écraser") { _, _ ->
+                    // On supprime l'ancien avant de lancer l'activity
+                    item.audioFile.delete() 
+                    launchRecorder(item)
+                }
+                .setNegativeButton("Annuler", null)
+                .show()
+        } else {
+            launchRecorder(item)
+        }
+    }
+
+    private fun launchRecorder(item: Chronicle) {
         val intent = Intent(this, RecorderActivity::class.java)
         intent.putExtra("PROJECT_PATH", projectDir.absolutePath)
         intent.putExtra("CHRONICLE_NAME", item.name)
@@ -274,7 +296,11 @@ class ProjectActivity : AppCompatActivity() {
             .setView(container)
             .setPositiveButton("Renommer") { _, _ ->
                 val newName = input.text.toString().trim().replace(Regex("[^\\p{L}0-9 _-]"), "")
-                if (newName.isNotEmpty() && newName != item.name) {
+                
+                // Vérif doublon aussi au renommage
+                if (chronicleList.any { it.name.equals(newName, ignoreCase = true) && it != item }) {
+                    Toast.makeText(this, "Ce nom existe déjà", Toast.LENGTH_SHORT).show()
+                } else if (newName.isNotEmpty() && newName != item.name) {
                     val oldBase = item.prefix + item.name
                     val newBase = item.prefix + newName
                     
@@ -296,15 +322,13 @@ class ProjectActivity : AppCompatActivity() {
                 item.scriptFile.delete()
                 item.audioFile?.delete()
                 refreshList()
-                saveOrderOnDisk() // Pour réindexer
+                saveOrderOnDisk() 
             }
             .setNegativeButton("Non", null)
             .show()
     }
     
-    // ... performMerge() et getDisplayName() peuvent rester similaires ou être adaptés ...
     private fun performMerge() {
-         // Fusionner uniquement les items qui ont un audioFile
          val filesToMerge = chronicleList.mapNotNull { it.audioFile }
          if (filesToMerge.isEmpty()) return
          
@@ -332,7 +356,7 @@ class ChronicleAdapter(
         val btnScript: ImageButton = v.findViewById(R.id.btnItemScript)
         val btnRecord: ImageButton = v.findViewById(R.id.btnItemRecord)
         val btnEditAudio: ImageButton = v.findViewById(R.id.btnItemEditAudio)
-        val btnMenu: ImageButton = v.findViewById(R.id.btnItemDelete)
+        val btnMenu: ImageButton = v.findViewById(R.id.btnItemMenu)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
@@ -344,34 +368,28 @@ class ChronicleAdapter(
         val item = list[position]
         holder.txtName.text = item.name
         
-        // Statut
         val hasAudio = item.audioFile != null && item.audioFile.exists()
         val scriptLen = if (item.scriptFile.exists()) item.scriptFile.length() else 0
         val scriptStatus = if (scriptLen > 0) "Script OK" else "Script vide"
         val audioStatus = if (hasAudio) "Audio OK" else "Pas d'audio"
         holder.txtStatus.text = "$scriptStatus • $audioStatus"
 
-        // Visibilité des boutons
         holder.btnEditAudio.visibility = if (hasAudio) View.VISIBLE else View.INVISIBLE
-        if (hasAudio) {
-            holder.btnRecord.setImageResource(R.drawable.ic_record) // Optionnel: changer icone si déjà enregistré (ex: ic_redo)
-        }
+        // Si on a déjà de l'audio, on peut afficher une icône différente (ex: retry) ou garder le micro
+        holder.btnRecord.setImageResource(R.drawable.ic_mic) 
 
         holder.btnScript.setOnClickListener { activity.onOpenScript(item) }
         holder.btnRecord.setOnClickListener { activity.onRecord(item) }
         holder.btnEditAudio.setOnClickListener { activity.onEditAudio(item) }
         
         holder.btnMenu.setOnClickListener { 
-            // Menu Contextuel pour Renommer / Supprimer
             val popup = PopupMenu(activity, holder.btnMenu)
             popup.menu.add("Renommer")
-            popup.menu.add("Dupliquer")
             popup.menu.add("Supprimer")
             popup.setOnMenuItemClickListener { menuItem ->
                 when(menuItem.title) {
                     "Renommer" -> activity.onRename(item)
                     "Supprimer" -> activity.onDelete(item)
-                    // Dupliquer à implémenter si besoin
                 }
                 true
             }
