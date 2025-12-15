@@ -97,7 +97,7 @@
             android:scaleType="fitCenter"
             android:src="@drawable/ic_more" 
             android:background="?selectableItemBackgroundBorderless" 
-            android:contentDescription="More"/           
+            android:contentDescription="More"/>       
 
     </LinearLayout>
 </androidx.cardview.widget.CardView>
