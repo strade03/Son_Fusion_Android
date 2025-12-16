@@ -2,7 +2,6 @@ package com.podcastcreateur.app
 
 import android.media.*
 import java.io.File
-import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -22,9 +21,6 @@ object AudioHelper {
     private const val BIT_RATE = 128000
     private const val WAVEFORM_SAMPLES = 10000 // Nombre de points pour la waveform
 
-    /**
-     * NOUVELLE APPROCHE : Ne charge que les métadonnées et un aperçu
-     */
     fun getAudioMetadata(input: File): AudioMetadata? {
         if (!input.exists()) return null
         
@@ -82,10 +78,6 @@ object AudioHelper {
         return AudioMetadata(sampleRate, totalSamples, channelCount, durationSeconds)
     }
 
-    /**
-     * Charge uniquement un aperçu pour l'affichage de la waveform
-     * On prend 1 sample tous les N samples pour avoir ~10000 points
-     */
     fun loadWaveformPreview(input: File, targetPoints: Int = WAVEFORM_SAMPLES): AudioContent {
         val metadata = getAudioMetadata(input) ?: return AudioContent(ShortArray(0), 44100)
         
@@ -93,7 +85,6 @@ object AudioHelper {
             return AudioContent(ShortArray(0), metadata.sampleRate)
         }
 
-        // Calculer le facteur de sous-échantillonnage
         val skipFactor = (metadata.totalSamples / targetPoints).toInt().coerceAtLeast(1)
         
         val extractor = MediaExtractor()
@@ -128,12 +119,12 @@ object AudioHelper {
 
         val bufferInfo = MediaCodec.BufferInfo()
         val previewData = ArrayList<Short>()
-        var sampleCounter = 0
         var actualChannels = metadata.channelCount
 
         try {
             var isEOS = false
-            while (true) {
+            var shouldContinue = true
+            while (shouldContinue) {
                 if (!isEOS) {
                     val inIndex = decoder.dequeueInputBuffer(10000)
                     if (inIndex >= 0) {
@@ -169,14 +160,11 @@ object AudioHelper {
                         outBuffer.get(chunk)
                         outBuffer.clear()
                         
-                        // Convertir en shorts et sous-échantillonner
                         val shorts = ShortArray(chunk.size / 2)
                         ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
                         
-                        // Prendre 1 sample tous les skipFactor
                         for (i in shorts.indices step (skipFactor * actualChannels)) {
                             if (actualChannels == 2 && i + 1 < shorts.size) {
-                                // Stéréo -> Mono
                                 val mono = ((shorts[i].toInt() + shorts[i + 1].toInt()) / 2).toShort()
                                 previewData.add(mono)
                             } else if (i < shorts.size) {
@@ -185,9 +173,13 @@ object AudioHelper {
                         }
                     }
                     decoder.releaseOutputBuffer(outIndex, false)
-                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                    if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        shouldContinue = false
+                    }
                 } else if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                    if (isEOS) break 
+                    if (isEOS) {
+                        shouldContinue = false
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -204,13 +196,11 @@ object AudioHelper {
     }
 
     /**
-     * Fusion STREAMING : Pas de chargement en RAM
-     * On décode chunk par chunk et on écrit directement
+     * CORRECTION ICI : Remplacement de forEachIndexed par une boucle for classique
      */
     fun mergeFilesStreaming(inputs: List<File>, output: File, onProgress: ((Int) -> Unit)? = null): Boolean {
         if (inputs.isEmpty()) return false
 
-        // 1. Déterminer le sample rate maître
         val firstMetadata = getAudioMetadata(inputs[0]) ?: return false
         val masterSampleRate = firstMetadata.sampleRate
 
@@ -218,7 +208,6 @@ object AudioHelper {
         var muxer: MediaMuxer? = null
 
         try {
-            // 2. Configurer l'encodeur
             val mime = MediaFormat.MIMETYPE_AUDIO_AAC
             val format = MediaFormat.createAudioFormat(mime, masterSampleRate, 1)
             format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
@@ -235,12 +224,18 @@ object AudioHelper {
             val outputBufferInfo = MediaCodec.BufferInfo()
             var totalPts = 0L
 
-            // 3. Traiter chaque fichier un par un
-            inputs.forEachIndexed { fileIndex, inputFile ->
+            // UTILISATION DE 'withIndex()' DANS UNE BOUCLE FOR CLASSIQUE
+            // Cela permet d'utiliser 'continue' et 'break' normalement
+            for ((fileIndex, inputFile) in inputs.withIndex()) {
                 onProgress?.invoke((fileIndex * 100) / inputs.size)
                 
                 val extractor = MediaExtractor()
-                extractor.setDataSource(inputFile.absolutePath)
+                try {
+                    extractor.setDataSource(inputFile.absolutePath)
+                } catch (e: Exception) {
+                    // Si on ne peut pas lire le fichier, on continue au suivant
+                    continue
+                }
                 
                 var trackIndex = -1
                 var inputFormat: MediaFormat? = null
@@ -256,11 +251,17 @@ object AudioHelper {
                 
                 if (trackIndex < 0 || inputFormat == null) {
                     extractor.release()
-                    continue
+                    continue // Maintenant valide grâce à la boucle for
                 }
 
                 extractor.selectTrack(trackIndex)
-                val inputMime = inputFormat.getString(MediaFormat.KEY_MIME) ?: continue
+                val inputMime = inputFormat.getString(MediaFormat.KEY_MIME)
+                
+                if (inputMime == null) {
+                    extractor.release()
+                    continue // Maintenant valide
+                }
+
                 val decoder = MediaCodec.createDecoderByType(inputMime)
                 decoder.configure(inputFormat, null, null, 0)
                 decoder.start()
@@ -271,7 +272,6 @@ object AudioHelper {
                 try {
                     var isEOS = false
                     while (true) {
-                        // Décoder
                         if (!isEOS) {
                             val inIndex = decoder.dequeueInputBuffer(10000)
                             if (inIndex >= 0) {
@@ -301,7 +301,6 @@ object AudioHelper {
                         if (outIndex >= 0) {
                             val decodedData = decoder.getOutputBuffer(outIndex)
                             if (decodedData != null && bufferInfo.size > 0) {
-                                // Convertir stéréo -> mono si nécessaire
                                 val pcmBytes = ByteArray(bufferInfo.size)
                                 decodedData.get(pcmBytes)
                                 decodedData.clear()
@@ -319,7 +318,6 @@ object AudioHelper {
                                     pcmShorts
                                 }
 
-                                // Encoder directement
                                 val monoBytes = ByteArray(monoShorts.size * 2)
                                 ByteBuffer.wrap(monoBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().put(monoShorts)
                                 
@@ -337,7 +335,6 @@ object AudioHelper {
                                         offset += toWrite
                                     }
                                     
-                                    // Lire l'output de l'encodeur
                                     val (newTrack, newStarted) = drainEncoder(encoder, muxer, outputBufferInfo, audioTrackIndex, muxerStarted) { track, started ->
                                         audioTrackIndex = track
                                         muxerStarted = started
@@ -358,13 +355,13 @@ object AudioHelper {
                 }
             }
 
-            // 4. Finaliser l'encodeur
             val encIndex = encoder.dequeueInputBuffer(10000)
             if (encIndex >= 0) {
                 encoder.queueInputBuffer(encIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             }
             
-            while (true) {
+            var finalizingEncoder = true
+            while (finalizingEncoder) {
                 val outIndex = encoder.dequeueOutputBuffer(outputBufferInfo, 10000)
                 if (outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     val newFormat = encoder.outputFormat
@@ -382,7 +379,9 @@ object AudioHelper {
                         muxer.writeSampleData(audioTrackIndex, encodedData!!, outputBufferInfo)
                     }
                     encoder.releaseOutputBuffer(outIndex, false)
-                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        finalizingEncoder = false
+                    }
                 }
             }
 
@@ -442,14 +441,12 @@ object AudioHelper {
         return Pair(currentTrack, currentStarted)
     }
 
-    // Ancienne fonction gardée pour compatibilité mais non recommandée
     @Deprecated("Use loadWaveformPreview instead")
     fun decodeToPCM(input: File, maxSamples: Int = Int.MAX_VALUE): AudioContent {
         return loadWaveformPreview(input)
     }
 
     fun savePCMToAAC(pcmData: ShortArray, outputFile: File, sampleRate: Int): Boolean {
-        // Fonction conservée pour l'édition de petits fichiers
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
 
@@ -477,8 +474,9 @@ object AudioHelper {
 
             var inputOffset = 0
             var isEOS = false
+            var encoding = true
 
-            while (true) {
+            while (encoding) {
                 if (!isEOS) {
                     val inIndex = encoder.dequeueInputBuffer(10000)
                     if (inIndex >= 0) {
@@ -514,7 +512,9 @@ object AudioHelper {
                         muxer.writeSampleData(audioTrackIndex, encodedData!!, outputBufferInfo)
                     }
                     encoder.releaseOutputBuffer(outIndex, false)
-                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) break
+                    if ((outputBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0) {
+                        encoding = false
+                    }
                 }
             }
             return true
