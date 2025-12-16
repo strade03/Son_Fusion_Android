@@ -20,18 +20,11 @@ class EditorActivity : AppCompatActivity() {
     private var pcmData: ShortArray = ShortArray(0)
     
     private var fileSampleRate = 44100 
+    private var metadata: AudioMetadata? = null
     
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false
     private var currentZoom = 1.0f
-    
-    // Flag pour savoir si on a chargé en mode dégradé
-    private var isDownsampled = false
-
-    companion object {
-        private const val LARGE_FILE_THRESHOLD = 50 * 1024 * 1024 // 50 Mo
-        private const val WARNING_THRESHOLD = 100 * 1024 * 1024 // 100 Mo
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -43,14 +36,14 @@ class EditorActivity : AppCompatActivity() {
         currentFile = File(path)
         
         binding.txtFilename.text = currentFile.name.replace(Regex("^\\d{3}_"), "")
+        binding.progressBar.visibility = View.VISIBLE
         
-        // Vérifier la taille du fichier AVANT de charger
-        checkFileSizeAndLoad()
+        loadWaveform()
 
         binding.btnPlay.setOnClickListener { if(!isPlaying) playAudio() else stopAudio() }
-        binding.btnCut.setOnClickListener { cutSelection() }
-        binding.btnNormalize.setOnClickListener { normalizeSelection() }
-        binding.btnSave.setOnClickListener { saveFile() }
+        binding.btnCut.setOnClickListener { showUnsupportedMessage() }
+        binding.btnNormalize.setOnClickListener { showUnsupportedMessage() }
+        binding.btnSave.setOnClickListener { showUnsupportedMessage() }
         
         binding.btnZoomIn.setOnClickListener { 
             applyZoom(currentZoom * 1.5f)
@@ -84,36 +77,8 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
-    private fun checkFileSizeAndLoad() {
-        val fileSizeMb = currentFile.length() / (1024 * 1024)
-        
-        when {
-            currentFile.length() > WARNING_THRESHOLD -> {
-                // Fichier très gros : avertir l'utilisateur
-                AlertDialog.Builder(this)
-                    .setTitle("Fichier volumineux")
-                    .setMessage("Ce fichier fait ${fileSizeMb} Mo. Le chargement peut prendre du temps et la qualité sera réduite pour l'affichage.\n\nContinuer ?")
-                    .setPositiveButton("Oui") { _, _ ->
-                        isDownsampled = true
-                        loadWaveform()
-                    }
-                    .setNegativeButton("Annuler") { _, _ ->
-                        finish()
-                    }
-                    .setCancelable(false)
-                    .show()
-            }
-            currentFile.length() > LARGE_FILE_THRESHOLD -> {
-                // Fichier gros : charger en mode dégradé sans demander
-                isDownsampled = true
-                Toast.makeText(this, "Fichier volumineux : chargement optimisé", Toast.LENGTH_LONG).show()
-                loadWaveform()
-            }
-            else -> {
-                // Fichier normal
-                loadWaveform()
-            }
-        }
+    private fun showUnsupportedMessage() {
+        Toast.makeText(this, "Édition non disponible. Utilisez Audacity pour éditer ce fichier.", Toast.LENGTH_LONG).show()
     }
 
     private fun applyZoom(newZoom: Float) {
@@ -139,103 +104,93 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun loadWaveform() {
-        binding.progressBar.visibility = View.VISIBLE
-        
         Thread {
             try {
-                val content = if (isDownsampled) {
-                    // Charger avec limitation de samples
-                    AudioHelper.decodeToPCM(currentFile, 44100 * 60 * 10) // Max 10 minutes
-                } else {
-                    // Charger normalement
-                    AudioHelper.decodeToPCM(currentFile, Int.MAX_VALUE)
+                // Charger les métadonnées
+                metadata = AudioHelper.getAudioMetadata(currentFile)
+                
+                if (metadata == null) {
+                    runOnUiThread {
+                        binding.progressBar.visibility = View.GONE
+                        Toast.makeText(this, "Impossible de lire ce fichier", Toast.LENGTH_SHORT).show()
+                        finish()
+                    }
+                    return@Thread
                 }
                 
-                pcmData = content.data
-                fileSampleRate = content.sampleRate
+                fileSampleRate = metadata!!.sampleRate
+                
+                // Charger uniquement un aperçu (~10000 points)
+                val preview = AudioHelper.loadWaveformPreview(currentFile)
+                pcmData = preview.data
                 
                 runOnUiThread {
                     binding.waveformView.setWaveform(pcmData)
                     binding.progressBar.visibility = View.GONE
-                    binding.txtDuration.text = formatTime(pcmData.size)
+                    binding.txtDuration.text = formatDuration(metadata!!.durationSeconds)
                     
-                    if (isDownsampled) {
-                        Toast.makeText(this, "Mode aperçu : qualité réduite pour l'affichage", Toast.LENGTH_LONG).show()
-                    }
-                }
-            } catch (e: OutOfMemoryError) {
-                runOnUiThread {
-                    binding.progressBar.visibility = View.GONE
-                    AlertDialog.Builder(this)
-                        .setTitle("Fichier trop volumineux")
-                        .setMessage("Ce fichier est trop gros pour être édité sur cet appareil. Utilisez un logiciel sur ordinateur comme Audacity.")
-                        .setPositiveButton("OK") { _, _ -> finish() }
-                        .show()
+                    val sizeMb = currentFile.length() / (1024 * 1024)
+                    Toast.makeText(
+                        this, 
+                        "Fichier: ${sizeMb}Mo • ${metadata!!.durationSeconds/60}min - Mode visualisation uniquement", 
+                        Toast.LENGTH_LONG
+                    ).show()
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
                 runOnUiThread {
                     binding.progressBar.visibility = View.GONE
-                    Toast.makeText(this, "Erreur de chargement", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this, "Erreur: ${e.message}", Toast.LENGTH_SHORT).show()
+                    finish()
                 }
             }
         }.start()
     }
 
-    private fun formatTime(samples: Int): String {
-        if (fileSampleRate == 0) return "00:00"
-        val sec = samples / fileSampleRate
-        val m = sec / 60
-        val s = sec % 60
+    private fun formatDuration(seconds: Long): String {
+        val m = seconds / 60
+        val s = seconds % 60
         return String.format("%02d:%02d", m, s)
     }
 
     private fun playAudio() {
-        if (pcmData.isEmpty()) return
+        if (metadata == null) return
         isPlaying = true
         binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
 
+        // Pour la lecture, on utilise MediaPlayer qui streame automatiquement
         Thread {
-            val minBuf = AudioTrack.getMinBufferSize(fileSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-            audioTrack = AudioTrack(
-                AudioManager.STREAM_MUSIC, 
-                fileSampleRate,
-                AudioFormat.CHANNEL_OUT_MONO, 
-                AudioFormat.ENCODING_PCM_16BIT, 
-                minBuf, 
-                AudioTrack.MODE_STREAM
-            )
-
-            audioTrack?.play()
-
-            var startIdx = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos
-            startIdx = startIdx.coerceIn(0, pcmData.size)
-
-            val bufferSize = 4096
-            var offset = startIdx
-            val endIdx = if (binding.waveformView.selectionEnd > startIdx) binding.waveformView.selectionEnd else pcmData.size
-
-            while (isPlaying && offset < endIdx) {
-                val len = minOf(bufferSize, endIdx - offset)
-                audioTrack?.write(pcmData, offset, len)
-                offset += len
+            try {
+                val player = android.media.MediaPlayer()
+                player.setDataSource(currentFile.absolutePath)
+                player.prepare()
+                player.start()
                 
-                if (offset % (fileSampleRate / 5) == 0) { 
-                     runOnUiThread { 
-                         binding.waveformView.playheadPos = offset
-                         binding.waveformView.invalidate()
-                         autoScroll(offset)
-                     }
+                val duration = player.duration
+                val startTime = System.currentTimeMillis()
+                
+                while (isPlaying && player.isPlaying) {
+                    val elapsed = (System.currentTimeMillis() - startTime).toInt()
+                    val progress = (elapsed.toFloat() / duration * pcmData.size).toInt()
+                    
+                    runOnUiThread {
+                        binding.waveformView.playheadPos = progress.coerceIn(0, pcmData.size)
+                        binding.waveformView.invalidate()
+                        autoScroll(progress)
+                    }
+                    Thread.sleep(50)
                 }
+                
+                player.release()
+                
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
-
-            audioTrack?.stop()
-            audioTrack?.release()
-            audioTrack = null
+            
             isPlaying = false
-            runOnUiThread { 
-                binding.btnPlay.setImageResource(R.drawable.ic_play) 
-                if (offset >= endIdx) binding.waveformView.playheadPos = startIdx
+            runOnUiThread {
+                binding.btnPlay.setImageResource(R.drawable.ic_play)
+                binding.waveformView.playheadPos = 0
                 binding.waveformView.invalidate()
             }
         }.start()
@@ -251,67 +206,12 @@ class EditorActivity : AppCompatActivity() {
         binding.scroller.smoothScrollTo(scrollX, 0)
     }
 
-    private fun stopAudio() { isPlaying = false }
-    
-    private fun cutSelection() {
-        val start = binding.waveformView.selectionStart
-        val end = binding.waveformView.selectionEnd
-        if (start < 0 || end <= start) return
-        
-        if (isDownsampled) {
-            Toast.makeText(this, "Édition impossible en mode aperçu", Toast.LENGTH_LONG).show()
-            return
-        }
-
-        AlertDialog.Builder(this).setTitle("Couper ?").setPositiveButton("Oui") { _, _ ->
-             val newPcm = ShortArray(pcmData.size - (end - start))
-            System.arraycopy(pcmData, 0, newPcm, 0, start)
-            System.arraycopy(pcmData, end, newPcm, start, pcmData.size - end)
-            pcmData = newPcm
-            binding.waveformView.setWaveform(pcmData)
-            binding.waveformView.clearSelection()
-            binding.txtDuration.text = formatTime(pcmData.size)
-        }.setNegativeButton("Non", null).show()
-    }
-
-    private fun normalizeSelection() {
-        if (isDownsampled) {
-            Toast.makeText(this, "Édition impossible en mode aperçu", Toast.LENGTH_LONG).show()
-            return
-        }
-        
-        val start = if (binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
-        val end = if (binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else pcmData.size
-        var maxVal = 0
-        for (i in start until end) {
-            if (abs(pcmData[i].toInt()) > maxVal) maxVal = abs(pcmData[i].toInt())
-        }
-        if (maxVal > 0) {
-            val factor = 32767f / maxVal
-            for (i in start until end) pcmData[i] = (pcmData[i] * factor).toInt().toShort()
-            binding.waveformView.invalidate()
-            Toast.makeText(this, "Normalisé", Toast.LENGTH_SHORT).show()
-        }
-    }
-
-    private fun saveFile() {
-        if (isDownsampled) {
-            Toast.makeText(this, "Sauvegarde impossible en mode aperçu", Toast.LENGTH_LONG).show()
-            return
-        }
-        
-        binding.progressBar.visibility = View.VISIBLE
-        Thread {
-            val success = AudioHelper.savePCMToAAC(pcmData, currentFile, fileSampleRate)
-            runOnUiThread {
-                binding.progressBar.visibility = View.GONE
-                if (success) {
-                    Toast.makeText(this, "Sauvegardé", Toast.LENGTH_SHORT).show()
-                    finish()
-                }
-            }
-        }.start()
+    private fun stopAudio() { 
+        isPlaying = false 
     }
     
-    override fun onStop() { super.onStop(); stopAudio() }
+    override fun onStop() { 
+        super.onStop()
+        stopAudio()
+    }
 }

@@ -254,61 +254,65 @@ class ProjectActivity : AppCompatActivity() {
 
     // --- EXPORT AVEC PROGRESSION ---
 
-       private fun performMerge() {
-         val filesToMerge = chronicleList.mapNotNull { it.audioFile }
-         if (filesToMerge.isEmpty()) {
-             Toast.makeText(this, "Aucun audio à exporter", Toast.LENGTH_SHORT).show()
-             return
-         }
-         
-         val progressDialog = AlertDialog.Builder(this)
-             .setTitle("Export en cours...")
-             .setMessage("Veuillez patienter pendant la fusion.")
-             .setCancelable(false)
-             .create()
-         progressDialog.show()
 
-         val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "PodcastCreateur")
-         if (!publicDir.exists()) publicDir.mkdirs()
-         
-         // --- DÉBUT MODIFICATION NOMMAGE ---
-         
-         val originalName = projectDir.name
-         
-         // 1. Normaliser : Séparer les accents des lettres (ex: "é" devient "e" + "´")
-         val normalized = java.text.Normalizer.normalize(originalName, java.text.Normalizer.Form.NFD)
-         
-         // 2. Supprimer les accents (les marques diacritiques) avec une Regex
-         val withoutAccents = normalized.replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
-         
-         // 3. Remplacer les caractères non-alphanumériques (espaces, ponctuation) par des underscores
-         // On garde a-z, A-Z, 0-9, . et -
-         val safeProjectName = withoutAccents.replace(Regex("[^a-zA-Z0-9.-]"), "_")
-         
-         // --- FIN MODIFICATION NOMMAGE ---
 
-         val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
-         val timestamp = sdf.format(Date())
-         
-         // Résultat : Nom_Normalise_20231215_1830.m4a
-         val outputName = "${safeProjectName}_$timestamp.m4a"
-         val destFile = File(publicDir, outputName)
-         
-         Thread {
-             val success = AudioHelper.mergeFiles(filesToMerge, destFile)
-             runOnUiThread {
-                 progressDialog.dismiss()
-                 if (success) {
-                     AlertDialog.Builder(this)
+    private fun performMerge() {
+        val filesToMerge = chronicleList.mapNotNull { it.audioFile }
+        if (filesToMerge.isEmpty()) {
+            Toast.makeText(this, "Aucun audio à exporter", Toast.LENGTH_SHORT).show()
+            return
+        }
+        
+        // Créer un dialogue avec barre de progression
+        val progressView = layoutInflater.inflate(R.layout.dialog_progress, null)
+        val progressBar = progressView.findViewById<android.widget.ProgressBar>(R.id.progressBar)
+        val progressText = progressView.findViewById<android.widget.TextView>(R.id.progressText)
+        
+        progressBar.max = 100
+        progressBar.progress = 0
+        progressText.text = "Préparation..."
+        
+        val progressDialog = AlertDialog.Builder(this)
+            .setTitle("Export en cours...")
+            .setView(progressView)
+            .setCancelable(false)
+            .create()
+        progressDialog.show()
+
+        val publicDir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "PodcastCreateur")
+        if (!publicDir.exists()) publicDir.mkdirs()
+        
+        val originalName = projectDir.name
+        val normalized = java.text.Normalizer.normalize(originalName, java.text.Normalizer.Form.NFD)
+        val withoutAccents = normalized.replace(Regex("\\p{InCombiningDiacriticalMarks}+"), "")
+        val safeProjectName = withoutAccents.replace(Regex("[^a-zA-Z0-9.-]"), "_")
+        
+        val sdf = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.getDefault())
+        val timestamp = sdf.format(Date())
+        val outputName = "${safeProjectName}_$timestamp.m4a"
+        val destFile = File(publicDir, outputName)
+        
+        Thread {
+            val success = AudioHelper.mergeFilesStreaming(filesToMerge, destFile) { progress ->
+                runOnUiThread {
+                    progressBar.progress = progress
+                    progressText.text = "Fusion en cours... $progress%"
+                }
+            }
+            
+            runOnUiThread {
+                progressDialog.dismiss()
+                if (success) {
+                    AlertDialog.Builder(this)
                         .setTitle("Export terminé !")
                         .setMessage("Fichier sauvegardé :\nMusic/PodcastCreateur/$outputName")
                         .setPositiveButton("OK", null)
                         .show()
-                 } else {
-                     Toast.makeText(this, "Erreur lors de l'export", Toast.LENGTH_LONG).show()
-                 }
-             }
-         }.start()
+                } else {
+                    Toast.makeText(this, "Erreur lors de l'export", Toast.LENGTH_LONG).show()
+                }
+            }
+        }.start()
     }
 
     // --- ACTIONS CLASSIQUES ---
