@@ -9,69 +9,75 @@ import java.io.FileWriter
 object FFmpegHelper {
     private const val TAG = "FFmpegHelper"
 
-    /**
-    * Fusionne une liste de fichiers audio.
-    * CORRECTION MAJEURE : On ré-encode en AAC pour garantir la compatibilité.
-    * La simple copie (-c copy) échoue si on mélange MP3 et M4A ou des fréquences différentes.
-    */
-    fun mergeAudioFiles(inputs: List<File>, output: File, callback: (Boolean) -> Unit) {
-        if (inputs.isEmpty()) {
-            callback(false)
-            return
-        }
-
-        Thread {
-            try {
-                // 1. Créer le fichier liste pour ffmpeg
-                val listFile = File(output.parent, "ffmpeg_concat_list.txt")
-                val writer = FileWriter(listFile)
-                inputs.forEach { file ->
-                    // On échappe les apostrophes pour la syntaxe FFmpeg concat
-                    writer.write("file '${file.absolutePath}'\n")
-                }
-                writer.close()
-
-                // 2. Commande Concat Demuxer
-                // -safe 0 : Autorise les chemins absolus
-                // -c:a aac : On force l'encodage AAC
-                // -b:a 128k : Bitrate standard
-                // -ac 2 : Stéréo
-                // -ar 44100 : Fréquence 44.1kHz
-                // Cela uniformise tout (MP3, WAV, M4A) en un seul M4A propre.
-                val cmd = "-f concat -safe 0 -i \"${listFile.absolutePath}\" -c:a aac -b:a 128k -ac 2 -ar 44100 -y \"${output.absolutePath}\""
-                
-                Log.d(TAG, "Executing merge command: $cmd")
-                
-                // Exécution synchrone (bloquante dans ce thread)
-                val session = FFmpegKit.execute(cmd)
-                
-                // Nettoyage de la liste temporaire
-                if (listFile.exists()) listFile.delete()
-
-                if (ReturnCode.isSuccess(session.returnCode)) {
-                    Log.d(TAG, "Merge success")
-                    callback(true)
-                } else {
-                    Log.e(TAG, "Merge failed with State: ${session.state} and ReturnCode: ${session.returnCode}")
-                    Log.e(TAG, "FFmpeg Output: ${session.allLogsAsString}")
-                    callback(false)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "Exception during merge", e)
-                e.printStackTrace()
-                callback(false)
-            }
-        }.start()
+/**
+ * Fusionne une liste de fichiers audio en utilisant le filtre CONCAT (filter_complex).
+ * C'est beaucoup plus robuste que le Concat Demuxer (fichier texte) pour la version MIN
+ * et gère mieux les problèmes de format.
+ */
+fun mergeAudioFiles(inputs: List<File>, output: File, callback: (Boolean) -> Unit) {
+    if (inputs.isEmpty()) {
+        callback(false)
+        return
     }
 
+    Thread {
+        try {
+            // Construction de la commande complexe
+            // Exemple pour 2 fichiers : 
+            // -i f1 -i f2 -filter_complex "[0:a][1:a]concat=n=2:v=0:a=1[out]" -map "[out]" output.m4a
+            
+            val cmdBuilder = StringBuilder()
+            
+            // 1. Ajouter les inputs
+            inputs.forEach { file ->
+                cmdBuilder.append("-i \"${file.absolutePath}\" ")
+            }
+            
+            // 2. Construire le filter graph
+            cmdBuilder.append("-filter_complex \"")
+            for (i in inputs.indices) {
+                cmdBuilder.append("[$i:a]")
+            }
+            cmdBuilder.append("concat=n=${inputs.size}:v=0:a=1[out]\" ")
+            
+            // 3. Mapping et Encodage
+            // -map "[out]" : Sélectionne le résultat du filtre
+            // -c:a aac : Encode en AAC
+            // -b:a 128k : Qualité
+            // -y : Overwrite
+            cmdBuilder.append("-map \"[out]\" -c:a aac -b:a 128k -y \"${output.absolutePath}\"")
+            
+            val cmd = cmdBuilder.toString()
+            
+            Log.d(TAG, "Executing Merge (Filter Complex): $cmd")
+            
+            val session = FFmpegKit.execute(cmd)
+            
+            if (ReturnCode.isSuccess(session.returnCode)) {
+                Log.d(TAG, "Merge success")
+                callback(true)
+            } else {
+                Log.e(TAG, "Merge failed. Logs: " + session.allLogsAsString)
+                callback(false)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception during merge", e)
+            callback(false)
+        }
+    }.start()
+}
+
     /**
-    * Coupe un fichier audio.
+    * Coupe un fichier audio avec précision.
+    * Utilise le ré-encodage pour garantir la précision à la milliseconde.
     */
     fun cutAudio(input: File, output: File, startSec: Double, durationSec: Double, callback: (Boolean) -> Unit) {
         Thread {
-            // -ss : Start time
-            // -t : Duration
-            // On ré-encode pour être précis à la milliseconde près (le stream copy coupe sur les keyframes)
+            // Note: Pour une coupe précise, il est souvent mieux de mettre -ss AVANT -i pour le seek rapide,
+            // mais FFmpeg peut parfois être imprécis sur le point de départ.
+            // Avec le ré-encodage, mettre -ss avant est généralement OK et plus rapide.
+            // Si c'est toujours imprécis, on peut essayer de mettre -ss APRES -i (plus lent mais décodage complet).
+            
             val cmd = "-ss $startSec -t $durationSec -i \"${input.absolutePath}\" -c:a aac -b:a 128k -y \"${output.absolutePath}\""
             
             Log.d(TAG, "Executing cut: $cmd")
@@ -80,7 +86,7 @@ object FFmpegHelper {
             if (ReturnCode.isSuccess(session.returnCode)) {
                 callback(true)
             } else {
-                Log.e(TAG, "Cut failed: " + session.failStackTrace)
+                Log.e(TAG, "Cut failed. Logs: " + session.allLogsAsString)
                 callback(false)
             }
         }.start()
@@ -91,8 +97,7 @@ object FFmpegHelper {
     */
     fun normalizeAudio(input: File, output: File, callback: (Boolean) -> Unit) {
         Thread {
-            // Utilisation de loudnorm si disponible, sinon volume simple
-            // Pour ffmpeg-kit-min, parfois les filtres complexes manquent, mais essayons loudnorm
+            // Tentative loudnorm
             val cmd = "-i \"${input.absolutePath}\" -filter:a loudnorm=I=-16:TP=-1.5:LRA=11 -c:a aac -b:a 128k -y \"${output.absolutePath}\""
             
             Log.d(TAG, "Executing normalize: $cmd")
@@ -101,8 +106,7 @@ object FFmpegHelper {
             if (ReturnCode.isSuccess(session.returnCode)) {
                 callback(true)
             } else {
-                Log.w(TAG, "Loudnorm failed (maybe not in min version?), trying simple volume boost")
-                // Fallback : augmentation simple du volume (+3dB)
+                Log.w(TAG, "Loudnorm failed, trying simple volume boost")
                 val fallbackCmd = "-i \"${input.absolutePath}\" -filter:a volume=3dB -c:a aac -b:a 128k -y \"${output.absolutePath}\""
                 val session2 = FFmpegKit.execute(fallbackCmd)
                 callback(ReturnCode.isSuccess(session2.returnCode))

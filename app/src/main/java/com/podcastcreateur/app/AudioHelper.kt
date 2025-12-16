@@ -50,19 +50,16 @@ object AudioHelper {
         }
 
         val sampleRate = try { format.getInteger(MediaFormat.KEY_SAMPLE_RATE) } catch (e: Exception) { 44100 }
+        // Récupération précise de la durée
         val durationUs = try { format.getLong(MediaFormat.KEY_DURATION) } catch (e: Exception) { 0L }
         val channelCount = try { format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) } catch (e: Exception) { 1 }
+        
         val totalSamples = if (durationUs > 0) ((durationUs / 1_000_000.0) * sampleRate).toLong() else 0L
-        val durationSeconds = durationUs / 1_000_000
 
         extractor.release()
-        return AudioMetadata(sampleRate, totalSamples, channelCount, durationSeconds)
+        return AudioMetadata(sampleRate, totalSamples, channelCount, durationUs)
     }
 
-    /**
-    * Charge une Waveform précise en utilisant la détection de PIC (Peak).
-    * Au lieu de sauter des échantillons, on lit tout et on garde le max local.
-    */
     fun loadWaveformPreview(input: File): AudioContent {
         val metadata = getAudioMetadata(input) ?: return AudioContent(ShortArray(0), 44100)
         if (metadata.totalSamples == 0L) return AudioContent(ShortArray(0), metadata.sampleRate)
@@ -100,9 +97,6 @@ object AudioHelper {
         val bufferInfo = MediaCodec.BufferInfo()
         val previewData = ArrayList<Short>()
         
-        // Calcul du ratio de compression : Combien de vrais samples pour 1 point du graphique ?
-        // Exemple : 10 min à 44.1kHz = 26M samples. Si on veut 8000 points, ratio = 3300.
-        // On va lire 3300 samples, prendre le max absolu, et l'ajouter.
         val totalExpectedSamples = metadata.totalSamples
         val samplesPerPoint = (totalExpectedSamples / TARGET_WAVEFORM_POINTS).toInt().coerceAtLeast(1)
         
@@ -135,12 +129,10 @@ object AudioHelper {
                         outBuffer.get(chunk)
                         outBuffer.clear()
                         
-                        // Conversion Bytes -> Shorts
                         val shorts = ShortArray(chunk.size / 2)
                         ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
                         
-                        // ALGORITHME DE PEAK DETECTION
-                        // On parcourt chaque échantillon décodé
+                        // Algorithme Peak Detection
                         for (sample in shorts) {
                             val absSample = abs(sample.toInt())
                             if (absSample > currentMaxSample) {
@@ -148,7 +140,6 @@ object AudioHelper {
                             }
                             samplesAccumulated++
 
-                            // Une fois qu'on a analysé 'samplesPerPoint' échantillons, on enregistre le pic
                             if (samplesAccumulated >= samplesPerPoint) {
                                 previewData.add(currentMaxSample.toShort())
                                 currentMaxSample = 0
@@ -160,8 +151,7 @@ object AudioHelper {
                     outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
                 }
                 
-                // Sécurité mémoire : si jamais on dépasse trop
-                if (previewData.size > TARGET_WAVEFORM_POINTS * 1.5) break
+                if (previewData.size > TARGET_WAVEFORM_POINTS * 2) break
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -170,7 +160,6 @@ object AudioHelper {
             try { extractor.release() } catch(e: Exception) {}
         }
 
-        // Conversion ArrayList -> Array primitif
         val result = ShortArray(previewData.size)
         for (i in previewData.indices) result[i] = previewData[i]
         

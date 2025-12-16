@@ -14,10 +14,10 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var binding: ActivityEditorBinding
     private lateinit var currentFile: File
     private var pcmData: ShortArray = ShortArray(0)
-    
+
     private var fileSampleRate = 44100 
     private var metadata: AudioMetadata? = null
-    
+
     private var isPlaying = false
     private var currentZoom = 1.0f
     private var player: android.media.MediaPlayer? = null
@@ -36,10 +36,9 @@ class EditorActivity : AppCompatActivity() {
 
         binding.btnPlay.setOnClickListener { if(!isPlaying) playAudio() else stopAudio() }
         
-        // -- BOUTONS D'ÉDITION AVEC FFMPEG --
         binding.btnCut.setOnClickListener { performCut() }
         binding.btnNormalize.setOnClickListener { performNormalize() }
-        binding.btnSave.setOnClickListener { finish() } // Sauvegarder = juste fermer car FFmpeg écrit sur disque directement
+        binding.btnSave.setOnClickListener { finish() }
         
         binding.btnZoomIn.setOnClickListener { applyZoom(currentZoom * 1.5f) }
         binding.btnZoomOut.setOnClickListener { applyZoom(currentZoom / 1.5f) }
@@ -58,23 +57,24 @@ class EditorActivity : AppCompatActivity() {
         val endIdx = binding.waveformView.selectionEnd
         
         if (startIdx < 0 || endIdx <= startIdx) {
-            Toast.makeText(this, "Sélectionnez une zone à supprimer (garder le reste ?)", Toast.LENGTH_SHORT).show()
-            // Note: Logique de "Cut" habituelle = Supprimer la sélection ou Garder la sélection ?
-            // Ici, pour simplifier, on va dire "TRIM" (Garder la sélection).
-            // Si tu veux supprimer la sélection (Cut), il faut 2 commandes concaténées.
-            // Faisons un TRIM (Garder ce qui est sélectionné) car c'est le plus courant sur mobile.
-             Toast.makeText(this, "Sélectionnez la zone à GARDER", Toast.LENGTH_LONG).show()
-             return
+            Toast.makeText(this, "Sélectionnez la zone à GARDER", Toast.LENGTH_LONG).show()
+            return
         }
 
-        val totalSamples = pcmData.size
-        // Conversion index -> secondes
-        // Attention: pcmData est un aperçu réduit ! Il faut utiliser le ratio durée réelle.
-        val duration = metadata!!.durationSeconds.toDouble()
+        // CORRECTION CALCUL PRÉCIS
+        // On utilise durationUs (microsecondes) converti en double pour une précision maximale
+        val durationSec = metadata!!.durationUs / 1_000_000.0
+        val totalGraphPoints = pcmData.size
         
-        val startTime = (startIdx.toDouble() / totalSamples) * duration
-        val endTime = (endIdx.toDouble() / totalSamples) * duration
+        if (totalGraphPoints == 0) return
+
+        // Règle de trois précise : (Index / TotalPoints) * DuréeRéelle
+        val startTime = (startIdx.toDouble() / totalGraphPoints) * durationSec
+        val endTime = (endIdx.toDouble() / totalGraphPoints) * durationSec
         val keepDuration = endTime - startTime
+
+        // Debug visuel pour vérifier
+        Toast.makeText(this, "Coupe: ${String.format("%.2f", startTime)}s -> ${String.format("%.2f", endTime)}s", Toast.LENGTH_SHORT).show()
 
         showLoading("Découpage en cours...")
 
@@ -84,15 +84,13 @@ class EditorActivity : AppCompatActivity() {
             runOnUiThread {
                 hideLoading()
                 if (success) {
-                    // Remplacer le fichier original
                     if (currentFile.exists()) currentFile.delete()
                     tempFile.copyTo(currentFile)
                     tempFile.delete()
                     
-                    // Recharger
                     stopAudio()
                     binding.waveformView.clearSelection()
-                    loadWaveform()
+                    loadWaveform() // Recharger la nouvelle forme d'onde
                     Toast.makeText(this, "Fichier découpé", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, "Erreur lors du découpage", Toast.LENGTH_SHORT).show()
@@ -139,7 +137,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun applyZoom(newZoom: Float) {
-        val clampedZoom = newZoom.coerceIn(1.0f, 50.0f) // Zoom plus fort permis
+        val clampedZoom = newZoom.coerceIn(1.0f, 50.0f)
         currentZoom = clampedZoom
         binding.waveformView.setZoomLevel(currentZoom)
     }
@@ -160,7 +158,8 @@ class EditorActivity : AppCompatActivity() {
                 runOnUiThread {
                     binding.waveformView.setWaveform(pcmData)
                     binding.progressBar.visibility = View.GONE
-                    binding.txtDuration.text = formatDuration(metadata!!.durationSeconds)
+                    val durationSec = metadata!!.durationUs / 1_000_000
+                    binding.txtDuration.text = formatDuration(durationSec)
                 }
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -192,8 +191,8 @@ class EditorActivity : AppCompatActivity() {
                 while (isPlaying && player?.isPlaying == true) {
                     val elapsed = player?.currentPosition ?: 0
                     if (duration > 0 && pcmData.isNotEmpty()) {
-                         val progress = (elapsed.toFloat() / duration * pcmData.size).toInt()
-                         runOnUiThread {
+                        val progress = (elapsed.toFloat() / duration * pcmData.size).toInt()
+                        runOnUiThread {
                             binding.waveformView.playheadPos = progress.coerceIn(0, pcmData.size)
                             binding.waveformView.invalidate()
                             autoScroll(progress)
@@ -207,7 +206,7 @@ class EditorActivity : AppCompatActivity() {
             stopAudio()
         }.start()
     }
-    
+
     private fun autoScroll(sampleIdx: Int) {
         val totalSamples = pcmData.size
         if (totalSamples == 0) return
@@ -230,9 +229,9 @@ class EditorActivity : AppCompatActivity() {
             binding.btnPlay.setImageResource(R.drawable.ic_play)
         }
     }
-    
+
     private fun confirmReRecord() {
-         AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("Refaire l'enregistrement ?")
             .setMessage("L'audio actuel sera remplacé.")
             .setPositiveButton("Oui") { _, _ ->
