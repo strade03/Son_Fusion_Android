@@ -6,23 +6,23 @@ import android.media.MediaFormat
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 
 data class AudioContent(
     val data: ShortArray,
     val sampleRate: Int
-)
+    )
 
 data class AudioMetadata(
     val sampleRate: Int,
     val totalSamples: Long,
     val channelCount: Int,
     val durationSeconds: Long
-)
+    )
 
 object AudioHelper {
-    // Nombre de points max pour la waveform pour éviter de saturer la RAM
-    private const val WAVEFORM_SAMPLES = 8000 
-
+// On veut environ 8000 points pour dessiner la courbe sur tout l'écran
+    private const val TARGET_WAVEFORM_POINTS = 8000
     fun getAudioMetadata(input: File): AudioMetadata? {
         if (!input.exists()) return null
         
@@ -59,7 +59,10 @@ object AudioHelper {
         return AudioMetadata(sampleRate, totalSamples, channelCount, durationSeconds)
     }
 
-    // Chargement allégé pour la visualisation
+    /**
+    * Charge une Waveform précise en utilisant la détection de PIC (Peak).
+    * Au lieu de sauter des échantillons, on lit tout et on garde le max local.
+    */
     fun loadWaveformPreview(input: File): AudioContent {
         val metadata = getAudioMetadata(input) ?: return AudioContent(ShortArray(0), 44100)
         if (metadata.totalSamples == 0L) return AudioContent(ShortArray(0), metadata.sampleRate)
@@ -90,10 +93,6 @@ object AudioHelper {
         val format = extractor.getTrackFormat(trackIndex)
         val mime = format.getString(MediaFormat.KEY_MIME) ?: return AudioContent(ShortArray(0), metadata.sampleRate)
         
-        // Optimisation : Si le fichier est très long, on saute des bouts pour aller plus vite
-        // Pour une vraie waveform précise sur gros fichier, FFmpeg serait mieux, 
-        // mais MediaCodec est OK pour la visualisation si on ne stocke pas tout.
-        
         val decoder = MediaCodec.createDecoderByType(mime)
         decoder.configure(format, null, null, 0)
         decoder.start()
@@ -101,11 +100,14 @@ object AudioHelper {
         val bufferInfo = MediaCodec.BufferInfo()
         val previewData = ArrayList<Short>()
         
-        // Facteur de saut pour réduire la RAM consommée
-        // On vise environ WAVEFORM_SAMPLES points au total
-        val totalEstimatedBytes = metadata.durationSeconds * metadata.sampleRate * 2 // 16bit
-        val skipRatio = (totalEstimatedBytes / (WAVEFORM_SAMPLES * 2)).toInt().coerceAtLeast(1)
-        var outputCount = 0
+        // Calcul du ratio de compression : Combien de vrais samples pour 1 point du graphique ?
+        // Exemple : 10 min à 44.1kHz = 26M samples. Si on veut 8000 points, ratio = 3300.
+        // On va lire 3300 samples, prendre le max absolu, et l'ajouter.
+        val totalExpectedSamples = metadata.totalSamples
+        val samplesPerPoint = (totalExpectedSamples / TARGET_WAVEFORM_POINTS).toInt().coerceAtLeast(1)
+        
+        var currentMaxSample = 0
+        var samplesAccumulated = 0
 
         try {
             var isEOS = false
@@ -129,29 +131,37 @@ object AudioHelper {
                 while (outIndex >= 0) {
                     val outBuffer = decoder.getOutputBuffer(outIndex)
                     if (outBuffer != null && bufferInfo.size > 0) {
-                        // Lecture des données
-                        // Pour optimiser, on ne lit pas tout si skipRatio est grand
                         val chunk = ByteArray(bufferInfo.size)
                         outBuffer.get(chunk)
                         outBuffer.clear()
                         
-                        // Downsampling simple
+                        // Conversion Bytes -> Shorts
                         val shorts = ShortArray(chunk.size / 2)
                         ByteBuffer.wrap(chunk).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
                         
-                        // On prend le max (peak) sur la plage de saut pour garder l'amplitude visuelle
-                        if (outputCount % skipRatio == 0) {
-                             // Algorithme de pic simple : prendre une valeur arbitraire ou la moyenne
-                             if (shorts.isNotEmpty()) previewData.add(shorts[0])
+                        // ALGORITHME DE PEAK DETECTION
+                        // On parcourt chaque échantillon décodé
+                        for (sample in shorts) {
+                            val absSample = abs(sample.toInt())
+                            if (absSample > currentMaxSample) {
+                                currentMaxSample = absSample
+                            }
+                            samplesAccumulated++
+
+                            // Une fois qu'on a analysé 'samplesPerPoint' échantillons, on enregistre le pic
+                            if (samplesAccumulated >= samplesPerPoint) {
+                                previewData.add(currentMaxSample.toShort())
+                                currentMaxSample = 0
+                                samplesAccumulated = 0
+                            }
                         }
-                        outputCount++
                     }
                     decoder.releaseOutputBuffer(outIndex, false)
                     outIndex = decoder.dequeueOutputBuffer(bufferInfo, 0)
                 }
                 
-                // Sécurité mémoire
-                if (previewData.size > WAVEFORM_SAMPLES * 2) break
+                // Sécurité mémoire : si jamais on dépasse trop
+                if (previewData.size > TARGET_WAVEFORM_POINTS * 1.5) break
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -160,6 +170,7 @@ object AudioHelper {
             try { extractor.release() } catch(e: Exception) {}
         }
 
+        // Conversion ArrayList -> Array primitif
         val result = ShortArray(previewData.size)
         for (i in previewData.indices) result[i] = previewData[i]
         
