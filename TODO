@@ -1,8 +1,5 @@
 
 
-- Faire Ajouter un enregistrement, ou on donne le nom et mettre la possibilité de mettre un texte (prompteur)
-=> on ajoute la ligne avec un lien sur l'edition du texte pour le prompteur et le bouton enregister pour créer le son.
-=> ne pas mettre les extensions dans le nom des enregistrement
 
 => pour l'importation filtrer les fichiers importables avec les formats supporté
 => Nom de fichier avec accents mal gérer.
@@ -15,10 +12,44 @@
 
 Prompt à suivre :
 **************************************
+Voici mon application
+Maintenant on va optimiser l'ouverture des fichier longs
+Je pense qu'il n'est pas utile d'afficher toute la longueur de l'onde, il faudrait afficher 1 min le reste on le calcul en arrière plan mais au moins on a commencé à avoir quelques chose. En gros on zoom.
+Par contre c'est étrange quand je regarde l'onde sur Audacity d'un fichier cela n'a rien avoir avoir l'affiche dans mon application une idée ?
+
+Optimiser encore en me donnant les fichiers corrigés entier et affiché du début jusqu'à la fin en mode code.
+
+
+PISTES D'optimisation :
+
+    Le calcul (RMS vs Peak) : Ton code actuel utilisait sqrt(sampleSum / sampleCount). C'est une valeur RMS (moyenne quadratique), qui représente le "volume perçu" (l'énergie). Audacity, lui, affiche les Peaks (les crêtes max/min). Le RMS "lisse" l'audio, ce qui donne un aspect "boudin" ou plat. Pour de l'édition précise (couper un bruit sec), il faut afficher les Peaks (la valeur maximale absolue).
+    La résolution : Ton code précédent essayait de faire tenir tout le fichier dans ScreenWidth * 2. Pour un fichier de 10 minutes, cela écrasait énormément de détails.
+
+La stratégie d'optimisation (Streaming)
+
+Pour afficher le début immédiatement sans attendre la fin du calcul :
+
+    On ne calcule pas une taille fixe. On génère 50 points par seconde d'audio (haute précision).
+    On utilise un Callback qui envoie les données à l'interface pendant que le processeur lit le fichier.
+    On applique un Zoom par défaut élevé pour voir les détails (environ 10 secondes affichées à l'écran).
+    Le reste du fichier se dessinera tout seul au fur et à mesure de l'analyse en arrière-plan.
+
 
 
 **************************************
-On va améliorer notre application.
-Comme c'est pour créer des émissions, on ne va non pas enregistrer mais créer un chronique 
-on lui applique un nom le fichier lié aura le même nom. Si on importe on aura le nom du fichier comme chronique mais avec la possibilité de la renommer.
-A la création on ajoute la ligne sans ouvrir l'enregistrement. On aura l'icone enregistrer (ic_record) et un nouvelle icone ic_edit_script qui sera le script textuel qui sera affiché lors de l'enregistrement pour aider à faire l'enregistrement.
+
+CONSIGNES 
+quand tu m'affiches le code tu as le début du fichier dans le texte et la suite dans le code c'est infernal, met bien tout le fichier en mode code
+Exemple :
+--- START OF FILE all_kt_java_xml.txt ---
+
+Fichier : .\app/src\main\java\com\podcastcreateur\app\AudioHelper.kt
+
+code Code
+package com.podcastcreateur.app
+
+import android.media.*
+import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import kotlin.math.abs
