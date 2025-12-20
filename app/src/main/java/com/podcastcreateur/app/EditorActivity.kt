@@ -28,7 +28,7 @@ class EditorActivity : AppCompatActivity() {
     
     // NE PLUS CHARGER TOUT LE FICHIER
     private var waveformData: FloatArray = FloatArray(0) // Seulement la forme d'onde
-    private var metadata: AudioHelper.AudioMetadata? = null
+    private var metadata: AudioMetadata? = null
     
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false
@@ -280,8 +280,8 @@ class EditorActivity : AppCompatActivity() {
             .setNegativeButton("Non", null)
             .show()
     }
-
-    private fun performCut(startSample: Int, endSample: Int, meta: AudioHelper.AudioMetadata) {
+    
+    private fun performCut(startSample: Int, endSample: Int, meta: AudioMetadata) {
         binding.progressBar.visibility = View.VISIBLE
         
         lifecycleScope.launch(Dispatchers.IO) {
