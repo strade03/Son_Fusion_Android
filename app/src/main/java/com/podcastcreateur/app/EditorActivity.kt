@@ -13,21 +13,16 @@ import androidx.lifecycle.lifecycleScope
 import com.podcastcreateur.app.databinding.ActivityEditorBinding
 import kotlinx.coroutines.*
 import java.io.File
-import kotlin.math.abs
 
 /**
- * ÉDITEUR OPTIMISÉ :
- * - Charge uniquement la waveform downsamplée (pas tout le fichier)
- * - Normalisation et coupe par streaming (pas de chargement complet)
- * - Gère les gros fichiers (10+ minutes)
+ * ÉDITEUR OPTIMISÉ - VERSION CORRIGÉE
  */
 class EditorActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityEditorBinding
     private lateinit var currentFile: File
     
-    // NE PLUS CHARGER TOUT LE FICHIER
-    private var waveformData: FloatArray = FloatArray(0) // Seulement la forme d'onde
+    private var waveformData: FloatArray = FloatArray(0)
     private var metadata: AudioMetadata? = null
     
     private var audioTrack: AudioTrack? = null
@@ -54,7 +49,7 @@ class EditorActivity : AppCompatActivity() {
         binding.btnCut.setOnClickListener { cutSelection() }
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
         binding.btnSave.setOnClickListener { 
-            Toast.makeText(this, "Pas de modifications nécessaires", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Modifications enregistrées", Toast.LENGTH_SHORT).show()
             finish()
         }
         
@@ -90,15 +85,11 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * NOUVELLE FONCTION OPTIMISÉE : Charge uniquement la waveform
-     */
     private fun loadWaveformOptimized() {
         binding.progressBar.visibility = View.VISIBLE
         
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // 1. Récupère les métadonnées (rapide)
                 metadata = AudioHelper.getAudioMetadata(currentFile)
                 
                 if (metadata == null) {
@@ -109,17 +100,10 @@ class EditorActivity : AppCompatActivity() {
                     return@launch
                 }
                 
-                // 2. Génère la waveform downsamplée (selon largeur écran)
                 val screenWidth = resources.displayMetrics.widthPixels
-                val targetWidth = screenWidth * 2 // 2x pour le zoom
+                val targetWidth = screenWidth * 2
                 
-                waveformData = AudioHelper.generateWaveformData(
-                    currentFile,
-                    targetWidth
-                ) { progress ->
-                    // Mise à jour optionnelle de la progression
-                    // Pas critique pour l'UX ici
-                }
+                waveformData = AudioHelper.generateWaveformData(currentFile, targetWidth)
                 
                 withContext(Dispatchers.Main) {
                     binding.waveformView.setWaveformData(waveformData, metadata!!.totalSamples.toInt())
@@ -167,7 +151,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     /**
-     * LECTURE OPTIMISÉE : Streaming direct du fichier
+     * LECTURE CORRIGÉE - Mise à jour du pointeur et bouton
      */
     private fun playAudio() {
         val meta = metadata ?: return
@@ -195,8 +179,7 @@ class EditorActivity : AppCompatActivity() {
 
                 audioTrack?.play()
 
-                // Streaming du fichier (pas de chargement complet)
-                val content = AudioHelper.decodeToPCM(currentFile) // TODO: Remplacer par streaming pur
+                val content = AudioHelper.decodeToPCM(currentFile)
                 val pcmData = content.data
                 
                 var startIdx = if (binding.waveformView.selectionStart >= 0) {
@@ -214,18 +197,31 @@ class EditorActivity : AppCompatActivity() {
                     pcmData.size
                 }
 
+                // CORRECTION: Mise à jour plus fréquente du pointeur
+                val updateInterval = meta.sampleRate / 20 // 20 fois par seconde
+                var samplesSinceUpdate = 0
+
                 while (isPlaying && offset < endIdx) {
                     val len = minOf(bufferSize, endIdx - offset)
                     audioTrack?.write(pcmData, offset, len)
                     offset += len
+                    samplesSinceUpdate += len
                     
-                    if (offset % (meta.sampleRate / 5) == 0) {
+                    // Mise à jour du pointeur à intervalles réguliers
+                    if (samplesSinceUpdate >= updateInterval) {
+                        samplesSinceUpdate = 0
                         withContext(Dispatchers.Main) {
                             binding.waveformView.playheadPos = offset
                             binding.waveformView.invalidate()
                             autoScroll(offset)
                         }
                     }
+                }
+
+                // Dernière mise à jour
+                withContext(Dispatchers.Main) {
+                    binding.waveformView.playheadPos = offset
+                    binding.waveformView.invalidate()
                 }
 
                 audioTrack?.stop()
@@ -235,6 +231,7 @@ class EditorActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 e.printStackTrace()
             } finally {
+                // CORRECTION: S'assurer que l'état est bien réinitialisé
                 isPlaying = false
                 withContext(Dispatchers.Main) {
                     binding.btnPlay.setImageResource(R.drawable.ic_play)
@@ -250,16 +247,23 @@ class EditorActivity : AppCompatActivity() {
         val screenW = resources.displayMetrics.widthPixels
         val x = (sampleIdx.toFloat() / meta.totalSamples) * viewWidth
         val scrollX = (x - screenW / 2).toInt()
-        binding.scroller.smoothScrollTo(scrollX, 0)
+        binding.scroller.smoothScrollTo(scrollX.coerceAtLeast(0), 0)
     }
 
     private fun stopAudio() {
         isPlaying = false
         playbackJob?.cancel()
+        audioTrack?.stop()
+        audioTrack?.release()
+        audioTrack = null
+        
+        // CORRECTION: Réinitialiser le bouton immédiatement
+        binding.btnPlay.setImageResource(R.drawable.ic_play)
+        binding.waveformView.invalidate()
     }
     
     /**
-     * COUPE OPTIMISÉE : Streaming sans chargement complet
+     * COUPE CORRIGÉE
      */
     private fun cutSelection() {
         val meta = metadata ?: return
@@ -273,7 +277,7 @@ class EditorActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("Couper la sélection ?")
-            .setMessage("Cela créera un nouveau fichier")
+            .setMessage("La partie sélectionnée sera supprimée")
             .setPositiveButton("Oui") { _, _ ->
                 performCut(start, end, meta)
             }
@@ -286,28 +290,28 @@ class EditorActivity : AppCompatActivity() {
         
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                // Convertir samples en millisecondes
-                val startMs = (startSample * 1000L) / meta.sampleRate
-                val endMs = (endSample * 1000L) / meta.sampleRate
+                // Charger les données complètes (nécessaire pour la coupe)
+                val content = AudioHelper.decodeToPCM(currentFile)
+                val pcmData = content.data
+                
+                // CORRECTION: Créer un nouveau tableau sans la partie sélectionnée
+                val beforeCut = pcmData.sliceArray(0 until startSample)
+                val afterCut = pcmData.sliceArray(endSample until pcmData.size)
+                val resultData = beforeCut + afterCut
                 
                 val tempFile = File(currentFile.parent, "temp_cut_${System.currentTimeMillis()}.m4a")
                 
-                // Coupe SANS charger tout le fichier en mémoire
-                val success = AudioHelper.trimAudio(
-                    currentFile,
-                    tempFile,
-                    0, startMs, // Partie avant
-                    meta.sampleRate
-                )
+                // Sauvegarder le résultat
+                val success = AudioHelper.savePCMToAAC(resultData, tempFile, meta.sampleRate)
                 
                 if (success) {
-                    // Remplace l'original
                     currentFile.delete()
                     tempFile.renameTo(currentFile)
                     
                     withContext(Dispatchers.Main) {
                         binding.waveformView.clearSelection()
-                        loadWaveformOptimized() // Recharge
+                        binding.waveformView.playheadPos = 0
+                        loadWaveformOptimized()
                         Toast.makeText(this@EditorActivity, "Coupé !", Toast.LENGTH_SHORT).show()
                     }
                 } else {
@@ -329,9 +333,6 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * NORMALISATION OPTIMISÉE : 2 passes par streaming
-     */
     private fun normalizeSelection() {
         val meta = metadata ?: return
         val start = if (binding.waveformView.selectionStart >= 0) {
