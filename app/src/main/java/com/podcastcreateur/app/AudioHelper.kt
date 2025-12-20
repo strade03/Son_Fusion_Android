@@ -725,4 +725,124 @@ object AudioHelper {
             return false
         }
     }
+    
+    /**
+    * Génère la waveform downsamplée uniquement pour les premiers maxSamples à afficher.
+    * Cela limite la lecture/décodage au début du fichier pour accélérer l'affichage initial.
+    */
+    fun generateWaveformDataPartial(
+        input: File,
+        targetWidth: Int,
+        maxSamples: Int
+    ): FloatArray {
+        if (!input.exists()) return FloatArray(0)
+
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(input.absolutePath)
+
+            var trackIndex = -1
+            var format: MediaFormat? = null
+
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                val mime = f.getString(MediaFormat.KEY_MIME)
+                if (mime?.startsWith("audio/") == true) {
+                    trackIndex = i
+                    format = f
+                    break
+                }
+            }
+
+            if (trackIndex < 0 || format == null) return FloatArray(0)
+            
+            extractor.selectTrack(trackIndex)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return FloatArray(0)
+
+            val decoder = MediaCodec.createDecoderByType(mime)
+            decoder.configure(format, null, null, 0)
+            decoder.start()
+
+            val waveform = FloatArray(targetWidth)
+            val bufferInfo = MediaCodec.BufferInfo()
+
+            val sampleRate = try {
+                format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            } catch (e: Exception) {
+                44100
+            }
+
+            val samplesPerPixel = maxSamples / targetWidth
+            if (samplesPerPixel == 0) return FloatArray(0)
+
+            var pixelIndex = 0
+            var sampleSum = 0.0
+            var sampleCount = 0
+
+            var isInputDone = false
+            var samplesProcessed = 0
+
+            while (pixelIndex < targetWidth && samplesProcessed < maxSamples) {
+                if (!isInputDone) {
+                    val inIndex = decoder.dequeueInputBuffer(10000)
+                    if (inIndex >= 0) {
+                        val inBuffer = decoder.getInputBuffer(inIndex)
+                        if (inBuffer != null) {
+                            val sampleSize = extractor.readSampleData(inBuffer, 0)
+                            if (sampleSize < 0) {
+                                decoder.queueInputBuffer(inIndex, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                                isInputDone = true
+                            } else {
+                                decoder.queueInputBuffer(inIndex, 0, sampleSize, extractor.sampleTime, 0)
+                                extractor.advance()
+                            }
+                        }
+                    }
+                }
+
+                val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000)
+                if (outIndex >= 0) {
+                    val outBuffer = decoder.getOutputBuffer(outIndex)
+                    if (outBuffer != null && bufferInfo.size > 0) {
+                        outBuffer.order(ByteOrder.LITTLE_ENDIAN)
+
+                        while (outBuffer.hasRemaining() && pixelIndex < targetWidth && samplesProcessed < maxSamples) {
+                            val sample = outBuffer.short / 32768.0
+                            sampleSum += sample * sample
+                            sampleCount++
+                            samplesProcessed++
+
+                            if (sampleCount >= samplesPerPixel) {
+                                waveform[pixelIndex] = kotlin.math.sqrt(sampleSum / sampleCount).toFloat()
+                                pixelIndex++
+                                sampleSum = 0.0
+                                sampleCount = 0
+                            }
+                        }
+                    }
+                    decoder.releaseOutputBuffer(outIndex, false)
+                    if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                } else if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
+                    if (isInputDone) break
+                }
+            }
+
+            // Final pixel if needed
+            if (sampleCount > 0 && pixelIndex < targetWidth) {
+                waveform[pixelIndex] = kotlin.math.sqrt(sampleSum / sampleCount).toFloat()
+            }
+
+            decoder.stop()
+            decoder.release()
+            extractor.release()
+
+            return waveform
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+            extractor.release()
+            return FloatArray(0)
+        }
+    }
+    
 }

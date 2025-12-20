@@ -91,7 +91,7 @@ class EditorActivity : AppCompatActivity() {
 
     private fun loadWaveformOptimized() {
         binding.progressBar.visibility = View.VISIBLE
-        
+
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 metadata = AudioHelper.getAudioMetadata(currentFile)
@@ -103,18 +103,35 @@ class EditorActivity : AppCompatActivity() {
                     }
                     return@launch
                 }
-                
+
+                val sampleRate = metadata!!.sampleRate
+                val maxSamplesToShow = sampleRate * 60  // 1 minute max
+                val totalSamples = metadata!!.totalSamples.toInt()
+                val limitSamples = totalSamples.coerceAtMost(maxSamplesToShow)
+
                 val screenWidth = resources.displayMetrics.widthPixels
                 val targetWidth = screenWidth * 2
-                
-                waveformData = AudioHelper.generateWaveformData(currentFile, targetWidth)
+
+                // Générer une waveform downsamplée correspondant aux premiers 1 min seulement
+                val partialWaveform = AudioHelper.generateWaveformDataPartial(currentFile, targetWidth, limitSamples)
                 
                 withContext(Dispatchers.Main) {
-                    binding.waveformView.setWaveformData(waveformData, metadata!!.totalSamples.toInt())
+                    binding.waveformView.setWaveformData(partialWaveform, limitSamples)
                     binding.progressBar.visibility = View.GONE
-                    binding.txtDuration.text = formatTime(metadata!!.duration)
+                    binding.txtDuration.text = formatTime(metadata!!.duration.coerceAtMost(60000)) // max 1 min shown
                 }
                 
+                // En arrière-plan, charger toute la waveform sans limite, puis rafraîchir UI si ok
+                if (limitSamples < totalSamples) {
+                    val fullWaveform = AudioHelper.generateWaveformData(currentFile, targetWidth)
+                    withContext(Dispatchers.Main) {
+                        waveformData = fullWaveform
+                        binding.waveformView.setWaveformData(fullWaveform, totalSamples)
+                        binding.txtDuration.text = formatTime(metadata!!.duration)
+                        binding.waveformView.invalidate()
+                    }
+                }
+
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
