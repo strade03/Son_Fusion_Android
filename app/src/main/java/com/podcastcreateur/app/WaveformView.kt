@@ -8,259 +8,193 @@ import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
-import kotlin.math.roundToInt
+import kotlin.math.abs
 
-/**
- * WAVEFORM VIEW OPTIMISÉE - STREAMING PROGRESSIF
- * Affiche les données au fur et à mesure qu'elles arrivent
- * Zoom par défaut élevé pour voir les détails
- */
 class WaveformView @JvmOverloads constructor(
     context: Context, attrs: AttributeSet? = null
 ) : View(context, attrs) {
 
-    // Données waveform (peak values)
-    private val waveformData = ArrayList<Float>()
+    // On stocke les points (Peaks) au lieu de tout recalculer
+    private val points = ArrayList<Float>()
     
-    // Nombre total de samples dans le fichier original
-    private var totalSamples = 0
+    // Total estimé (pour définir la largeur du scroll avant que tout soit chargé)
+    private var totalSamplesEstimate = 0L
     
-    // Nombre total de points waveform attendus (50 points/sec * durée)
-    private var expectedTotalPoints = 0
+    // Facteur fixe : 1 point = 882 samples (pour 44.1kHz -> 50pts/sec)
+    private val samplesPerPoint = 882
     
-    // Zoom : nombre de points affichés à l'écran
-    // Par défaut : 500 points = 10 secondes à 50 pts/sec
-    private var pointsVisibleOnScreen = 500
-    
+    // Zoom : Nombre de pixels par Point.
+    // Zoom 1.0 = 1 pixel par point (très compressé). 
+    // Zoom 10.0 = 10 pixels par point (large).
+    private var zoomFactor = 1.0f 
+
+    var selectionStart = -1
+    var selectionEnd = -1
+    var playheadPos = 0
+
     private val paint = Paint().apply {
-        color = Color.BLUE
+        color = Color.parseColor("#3F51B5") // Bleu Indigo
         strokeWidth = 2f
         style = Paint.Style.STROKE
-        isAntiAlias = true
+        isAntiAlias = false // Plus rapide
+    }
+    
+    private val centerLinePaint = Paint().apply {
+        color = Color.LTGRAY
+        strokeWidth = 1f
     }
     
     private val selectionPaint = Paint().apply {
-        color = Color.parseColor("#550000FF")
+        color = Color.parseColor("#44FFEB3B") // Jaune semi-transparent
         style = Paint.Style.FILL
     }
     
     private val playheadPaint = Paint().apply {
         color = Color.RED
-        strokeWidth = 4f
+        strokeWidth = 3f
     }
 
-    // Sélection et lecture en SAMPLES du fichier original
-    var selectionStart = -1
-    var selectionEnd = -1
-    var playheadPos = 0
-
     private var isSelectionMode = true
-    private var initialTouchX = 0f
-    private var touchDownTime = 0L
-    
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onLongPress(e: MotionEvent) {
-            isSelectionMode = false
-            performHapticFeedback(HAPTIC_FEEDBACK_ENABLED)
-        }
-        
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            if (totalSamples == 0 || width == 0) return false
-            val sampleIdx = pixelToSample(e.x)
-            playheadPos = sampleIdx
-            clearSelection()
+            playheadPos = pixelToSample(e.x)
+            selectionStart = -1; selectionEnd = -1
             invalidate()
             return true
         }
     })
 
-    /**
-     * ✅ Initialise la vue avec les métadonnées
-     */
-    fun setMetadata(totalSamplesCount: Int, durationMs: Long, sampleRate: Int) {
-        totalSamples = totalSamplesCount
-        
-        // Calculer le nombre de points attendus (50 points/sec)
-        expectedTotalPoints = ((durationMs / 1000.0) * 50).toInt()
-        
-        waveformData.clear()
+    fun initialize(totalSamples: Long) {
+        this.totalSamplesEstimate = totalSamples
+        clearData()
+    }
+    
+    fun clearData() {
+        points.clear()
         selectionStart = -1
         selectionEnd = -1
         playheadPos = 0
-        
-        requestLayout()
-        invalidate()
-    }
-    
-    /**
-     * ✅ Ajoute un chunk de données (appelé progressivement)
-     */
-    fun appendWaveformChunk(chunk: FloatArray) {
-        waveformData.addAll(chunk.toList())
-        
-        // Redessiner à chaque chunk reçu
-        post { invalidate() }
-        
-        // Ajuster la largeur si nécessaire
-        post { requestLayout() }
-    }
-    
-    /**
-     * ✅ Marque la fin du chargement
-     */
-    fun setComplete() {
-        post {
-            requestLayout()
-            invalidate()
-        }
-    }
-    
-    /**
-     * Ajuste le zoom (nombre de points visibles)
-     * ✅ CORRECTION : Permettre de dézoomer beaucoup plus (jusqu'à 50000 points)
-     */
-    fun setZoomLevel(factor: Float) {
-        // Plus le facteur est élevé, moins on voit de points (zoom in)
-        // factor = 1.0 -> 500 points (10 sec)
-        // factor = 0.1 -> 5000 points (100 sec)
-        // factor = 0.01 -> 50000 points (1000 sec = 16 min)
-        pointsVisibleOnScreen = (500 / factor).roundToInt().coerceIn(100, 100000)
         requestLayout()
         invalidate()
     }
 
-    fun clearSelection() { 
+    fun appendData(newPoints: FloatArray) {
+        for(p in newPoints) points.add(p)
+        requestLayout() // Recalculer la largeur
+        invalidate()
+    }
+    
+    fun setZoomLevel(factor: Float) {
+        zoomFactor = factor
+        requestLayout()
+        invalidate()
+    }
+
+    fun clearSelection() {
         selectionStart = -1
         selectionEnd = -1
-        invalidate() 
+        invalidate()
     }
 
+    // Calcul de la largeur totale de la vue
+    // Elle dépend du Zoom et du nombre total d'échantillons (estimé ou réel)
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val screenWidth = resources.displayMetrics.widthPixels
-        
-        // Largeur = (nombre total de points / points visibles) * largeur écran
-        // Si on a 5000 points et on en affiche 500, la largeur = 10 * screenWidth
-        val desiredWidth = if (expectedTotalPoints > 0) {
-            ((expectedTotalPoints.toFloat() / pointsVisibleOnScreen) * screenWidth).toInt()
+        val totalPoints = if (points.size > 0 && points.size * samplesPerPoint > totalSamplesEstimate) {
+            points.size.toLong()
         } else {
-            screenWidth
+            totalSamplesEstimate / samplesPerPoint
         }
         
-        val finalWidth = resolveSize(desiredWidth.coerceAtLeast(screenWidth), widthMeasureSpec)
+        val contentWidth = (totalPoints * zoomFactor).toInt()
+        
+        val finalWidth = resolveSize(contentWidth, widthMeasureSpec)
         val finalHeight = getDefaultSize(suggestedMinimumHeight, heightMeasureSpec)
-        setMeasuredDimension(finalWidth, finalHeight)
+        setMeasuredDimension(contentWidth.coerceAtLeast(finalWidth), finalHeight)
     }
 
     override fun onDraw(canvas: Canvas) {
         super.onDraw(canvas)
-        if (waveformData.isEmpty() || width <= 0) return
-
-        val w = width.toFloat()
+        
         val h = height.toFloat()
         val centerY = h / 2f
         
-        // Dessiner la waveform
-        val pixelsPerPoint = w / waveformData.size
+        // Ligne centrale
+        canvas.drawLine(0f, centerY, width.toFloat(), centerY, centerLinePaint)
+
+        // Optimisation : Ne dessiner que ce qui est visible à l'écran
+        // Le Parent est un HorizontalScrollView, mais on peut estimer la zone visible
+        // Ici on dessine tout car c'est une View standard, le GPU clippera.
+        // Pour ultra-optimisation, faudrait passer clipBounds.
         
-        // ✅ OPTIMISATION : Ne dessiner que les points visibles à l'écran
-        val scrollX = (parent as? View)?.scrollX ?: 0
-        val screenWidth = resources.displayMetrics.widthPixels
-        val startIndex = ((scrollX / pixelsPerPoint).toInt() - 10).coerceAtLeast(0)
-        val endIndex = (((scrollX + screenWidth) / pixelsPerPoint).toInt() + 10).coerceAtMost(waveformData.size - 1)
+        // On dessine des lignes verticales centrées (Peak)
+        // ZoomFactor détermine l'espacement entre chaque barre
         
-        for (i in startIndex..endIndex) {
-            val x = i * pixelsPerPoint
-            val amplitude = waveformData[i]
-            val scaledH = amplitude * centerY * 0.95f // 95% de la hauteur max
+        // val barWidth = (zoomFactor * 0.8f).coerceAtLeast(1f) // (Inutilisé, sert si drawRect)
+        
+        for (i in points.indices) {
+            val x = i * zoomFactor
             
-            // Dessiner une ligne verticale pour chaque point
-            canvas.drawLine(
-                x, centerY - scaledH,
-                x, centerY + scaledH,
-                paint
-            )
+            // Peak value (0.0 à 1.0)
+            val valPeak = points[i] 
+            
+            // Hauteur de la barre
+            val barHeight = valPeak * centerY * 1.8f // 1.8 pour laisser un peu de marge
+            
+            canvas.drawLine(x, centerY - barHeight, x, centerY + barHeight, paint)
         }
 
-        // Dessiner la sélection (en samples du fichier original)
-        if (selectionStart >= 0 && selectionEnd > selectionStart && totalSamples > 0) {
+        // Dessin Sélection
+        if (selectionStart >= 0 && selectionEnd > selectionStart) {
             val x1 = sampleToPixel(selectionStart)
             val x2 = sampleToPixel(selectionEnd)
             canvas.drawRect(x1, 0f, x2, h, selectionPaint)
         }
 
-        // Dessiner le pointeur de lecture (en samples du fichier original)
-        if (totalSamples > 0 && playheadPos > 0) {
-            val px = sampleToPixel(playheadPos)
-            canvas.drawLine(px, 0f, px, h, playheadPaint)
-        }
+        // Dessin Playhead
+        val px = sampleToPixel(playheadPos)
+        canvas.drawLine(px, 0f, px, h, playheadPaint)
+    }
+    
+    fun sampleToPixel(sample: Int): Float {
+        val pointIndex = sample / samplesPerPoint
+        return pointIndex * zoomFactor
     }
 
-    /**
-     * Convertit une position pixel en index de sample du fichier original
-     */
-    private fun pixelToSample(pixelX: Float): Int {
-        if (totalSamples == 0 || width == 0) return 0
-        val ratio = pixelX / width
-        return (ratio * totalSamples).toInt().coerceIn(0, totalSamples)
+    fun pixelToSample(x: Float): Int {
+        val pointIndex = x / zoomFactor
+        return (pointIndex * samplesPerPoint).toInt()
     }
-
-    /**
-     * Convertit un index de sample en position pixel
-     */
-    private fun sampleToPixel(sampleIdx: Int): Float {
-        if (totalSamples == 0 || width == 0) return 0f
-        val ratio = sampleIdx.toFloat() / totalSamples
-        return ratio * width
+    
+    fun getCenterSample(scrollX: Int, visibleWidth: Int): Int {
+        val centerX = scrollX + (visibleWidth / 2)
+        return pixelToSample(centerX.toFloat())
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (totalSamples == 0 || width == 0) return false
-        
         gestureDetector.onTouchEvent(event)
-        
-        when (event.action) {
+        when(event.action) {
             MotionEvent.ACTION_DOWN -> {
-                initialTouchX = event.x
-                touchDownTime = System.currentTimeMillis()
+                selectionStart = pixelToSample(event.x)
+                selectionEnd = selectionStart
+                playheadPos = selectionStart
                 isSelectionMode = true
-                
-                parent?.requestDisallowInterceptTouchEvent(true)
-                
-                val sampleIdx = pixelToSample(event.x)
-                selectionStart = sampleIdx
-                selectionEnd = sampleIdx
-                playheadPos = sampleIdx
                 invalidate()
             }
-            
             MotionEvent.ACTION_MOVE -> {
-                val sampleIdx = pixelToSample(event.x)
-                
-                if (isSelectionMode) {
-                    selectionEnd = sampleIdx
+                if(isSelectionMode) {
+                    val s = pixelToSample(event.x)
+                    selectionEnd = s
                     invalidate()
-                } else {
-                    parent?.requestDisallowInterceptTouchEvent(false)
                 }
             }
-            
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                parent?.requestDisallowInterceptTouchEvent(false)
-                
-                val touchDuration = System.currentTimeMillis() - touchDownTime
-                val touchDistance = kotlin.math.abs(event.x - initialTouchX)
-                
-                if (touchDuration < 200 && touchDistance < 10) {
-                    val sampleIdx = pixelToSample(event.x)
-                    playheadPos = sampleIdx
-                    clearSelection()
-                } else if (selectionStart > selectionEnd) {
-                    val temp = selectionStart
-                    selectionStart = selectionEnd
-                    selectionEnd = temp
+            MotionEvent.ACTION_UP -> {
+                if(selectionStart > selectionEnd) {
+                    val t = selectionStart; selectionStart = selectionEnd; selectionEnd = t
                 }
-                
-                isSelectionMode = true
+                // Si tout petit clic, c'est juste un déplacement curseur
+                if(abs(selectionEnd - selectionStart) < samplesPerPoint * 10) {
+                    selectionStart = -1; selectionEnd = -1
+                }
                 performClick()
             }
         }
