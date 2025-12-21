@@ -22,7 +22,7 @@ class EditorActivity : AppCompatActivity() {
     private var mediaPlayer: MediaPlayer? = null
     private var playbackJob: Job? = null
     
-    private var currentZoom = 2.5f 
+    private var currentZoom = 1.0f  // Zom initial 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -108,7 +108,7 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun applyZoom(newZoom: Float) {
-        val clamped = newZoom.coerceIn(0.5f, 50.0f)
+        val clamped = newZoom.coerceIn(0.1f, 50.0f)
         currentZoom = clamped
         val centerSample = binding.waveformView.getCenterSample(binding.scroller.scrollX, binding.scroller.width)
         binding.waveformView.setZoomLevel(currentZoom)

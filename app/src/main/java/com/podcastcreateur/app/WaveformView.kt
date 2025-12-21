@@ -28,7 +28,12 @@ class WaveformView @JvmOverloads constructor(
         style = Paint.Style.STROKE
         isAntiAlias = false 
     }
-    
+
+    private val outOfBoundsPaint = Paint().apply {
+        color = Color.parseColor("#BDBDBD") // Gris plus foncé pour le "vide"
+        style = Paint.Style.FILL
+    }
+
     private val centerLinePaint = Paint().apply {
         color = Color.LTGRAY
         strokeWidth = 1f
@@ -105,9 +110,16 @@ class WaveformView @JvmOverloads constructor(
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
         val total = if (points.size > totalPointsEstimate) points.size.toLong() else totalPointsEstimate
         val contentWidth = (total * zoomFactor).toInt()
-        val finalWidth = resolveSize(contentWidth, widthMeasureSpec)
+        
+        // On récupère la largeur de l'écran (parent)
+        val parentWidth = MeasureSpec.getSize(widthMeasureSpec)
+        
+        // On force la vue à être AU MOINS aussi large que l'écran + une marge de confort
+        // pour pouvoir scroller un peu après la fin
+        val finalWidth = contentWidth.coerceAtLeast(parentWidth)
+        
         val finalHeight = getDefaultSize(suggestedMinimumHeight, heightMeasureSpec)
-        setMeasuredDimension(contentWidth.coerceAtLeast(finalWidth), finalHeight)
+        setMeasuredDimension(finalWidth, finalHeight)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -116,12 +128,18 @@ class WaveformView @JvmOverloads constructor(
         val h = height.toFloat()
         val centerY = h / 2f
         
+        // --- Dessiner le fond de la zone "après le son" ---
+        val audioEndX = points.size * zoomFactor
+        if (audioEndX < width) {
+            canvas.drawRect(audioEndX, 0f, width.toFloat(), h, outOfBoundsPaint)
+        }
+
         canvas.drawLine(0f, centerY, width.toFloat(), centerY, centerLinePaint)
 
         for (i in points.indices) {
             val x = i * zoomFactor
             val valPeak = points[i] 
-            val barHeight = valPeak * centerY * 0.65f 
+            val barHeight = valPeak * centerY * 0.95f 
             canvas.drawLine(x, centerY - barHeight, x, centerY + barHeight, paint)
         }
 
