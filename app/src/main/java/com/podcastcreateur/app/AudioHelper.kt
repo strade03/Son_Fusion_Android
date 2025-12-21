@@ -54,7 +54,6 @@ object AudioHelper {
         }
     }
 
-    // --- STREAMING WAVEFORM (Pour affichage rapide) ---
     fun loadWaveformStream(input: File, onUpdate: (FloatArray) -> Unit) {
         if (!input.exists()) { onUpdate(FloatArray(0)); return }
         
@@ -70,7 +69,8 @@ object AudioHelper {
             if (idx < 0 || fmt == null) return
             
             extractor.selectTrack(idx)
-            val decoder = MediaCodec.createDecoderByType(fmt.getString(MediaFormat.KEY_MIME)!!)
+            val mime = fmt.getString(MediaFormat.KEY_MIME)!!
+            val decoder = MediaCodec.createDecoderByType(mime)
             decoder.configure(fmt, null, null, 0)
             decoder.start()
             
@@ -127,8 +127,7 @@ object AudioHelper {
         finally { extractor.release() }
     }
 
-    // --- COUPE EN STREAMING (Anti-Crash RAM) ---
-    // Lit le fichier et écrit le résultat directement sans charger tout le tableau en mémoire
+    // --- COUPE STREAMING ---
     fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
         var extractor: MediaExtractor? = null
         var decoder: MediaCodec? = null
@@ -149,14 +148,12 @@ object AudioHelper {
             val mime = format.getString(MediaFormat.KEY_MIME)!!
             val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
             
-            // 1. Prepare Decoder
             decoder = MediaCodec.createDecoderByType(mime)
             decoder.configure(format, null, null, 0)
             decoder.start()
 
-            // 2. Prepare Encoder (AAC)
             val encMime = MediaFormat.MIMETYPE_AUDIO_AAC
-            val encFormat = MediaFormat.createAudioFormat(encMime, sampleRate, 1) // Force Mono pour simplification
+            val encFormat = MediaFormat.createAudioFormat(encMime, sampleRate, 1)
             encFormat.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
             encFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             encFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -165,7 +162,6 @@ object AudioHelper {
             encoder.configure(encFormat, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             encoder.start()
 
-            // 3. Prepare Muxer
             muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             
             val bufferInfo = MediaCodec.BufferInfo()
@@ -177,9 +173,7 @@ object AudioHelper {
             var isInputEOS = false
             var isDecodedEOS = false
             
-            // Boucle de traitement
             while (true) {
-                // A. Lecture Extractor -> Decoder
                 if (!isInputEOS) {
                     val inIdx = decoder.dequeueInputBuffer(2000)
                     if (inIdx >= 0) {
@@ -195,61 +189,39 @@ object AudioHelper {
                     }
                 }
 
-                // B. Decoder -> Logique de Coupe -> Encoder
                 if (!isDecodedEOS) {
                     val outIdx = decoder.dequeueOutputBuffer(bufferInfo, 2000)
                     if (outIdx >= 0) {
                         val outBuf = decoder.getOutputBuffer(outIdx)
-                        
-                        // Si on a des données valides
                         if (outBuf != null && bufferInfo.size > 0) {
-                            // Convertir ByteBuffer en ShortArray pour compter les samples
-                            // PCM 16bit = 2 bytes per sample
                             val chunkBytes = ByteArray(bufferInfo.size)
                             outBuf.position(bufferInfo.offset)
                             outBuf.get(chunkBytes)
                             val samplesInChunk = chunkBytes.size / 2
                             
-                            // Logique de filtrage (Keep or Drop)
-                            // On construit un nouveau ByteArray contenant seulement ce qu'on garde
                             val keptBytesStream = java.io.ByteArrayOutputStream()
-                            
-                            // On traite sample par sample (simplifié, pourrait être optimisé par bloc)
-                            // Mais nécessaire pour la précision
                             for (i in 0 until samplesInChunk) {
                                 val currentSampleGlobal = totalSamplesProcessed + i
-                                
-                                // Si on est AVANT le début ou APRÈS la fin de la coupe -> On garde
                                 if (currentSampleGlobal < startSample || currentSampleGlobal >= endSample) {
-                                    // Copie des 2 octets (Little Endian)
                                     keptBytesStream.write(chunkBytes[i*2].toInt())
                                     keptBytesStream.write(chunkBytes[i*2+1].toInt())
                                 }
                             }
-                            
                             totalSamplesProcessed += samplesInChunk
-                            
                             val keptBytes = keptBytesStream.toByteArray()
-                            
-                            // Envoyer à l'encodeur si on a gardé quelque chose
                             if (keptBytes.isNotEmpty()) {
                                 feedEncoder(encoder, keptBytes)
                             }
                         }
-                        
                         decoder.releaseOutputBuffer(outIdx, false)
                         if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
                             isDecodedEOS = true
-                            // Signaler la fin à l'encodeur
                             val inIdx = encoder.dequeueInputBuffer(2000)
-                            if (inIdx >= 0) {
-                                encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                            }
+                            if (inIdx >= 0) encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
                         }
                     }
                 }
 
-                // C. Encoder -> Muxer
                 val encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 2000)
                 if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     muxerTrackIndex = muxer.addTrack(encoder.outputFormat)
@@ -266,10 +238,7 @@ object AudioHelper {
                     encoder.releaseOutputBuffer(encOutIdx, false)
                     if (encBufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
                 }
-                
-                // Timeout de sécurité si rien ne se passe (optionnel mais recommandé)
             }
-            
             return true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -282,7 +251,6 @@ object AudioHelper {
         }
     }
 
-    // Helper pour nourrir l'encodeur par petits bouts
     private fun feedEncoder(encoder: MediaCodec, data: ByteArray) {
         var offset = 0
         while (offset < data.size) {
@@ -299,11 +267,8 @@ object AudioHelper {
         }
     }
 
-    // --- UTILS pour Normalisation et Merge (inchangés ou simplifiés) ---
-
+    // --- UTILS ---
     fun decodeToPCM(input: File): AudioContent {
-        // ... (Garde la version précédente pour la normalisation qui nécessite d'analyser le pic) ...
-        // Je remets le code compressé pour gagner de la place, il fonctionne
         if (!input.exists()) return AudioContent(ShortArray(0), 44100)
         val ex = MediaExtractor(); try{ex.setDataSource(input.absolutePath)}catch(e:Exception){return AudioContent(ShortArray(0),44100)}
         var idx=-1; var fmt:MediaFormat?=null; for(i in 0 until ex.trackCount){val f=ex.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true){idx=i;fmt=f;break}}
@@ -321,7 +286,6 @@ object AudioHelper {
     }
 
     fun savePCMToAAC(pcmData: ShortArray, outputFile: File, sampleRate: Int): Boolean {
-        // ... (Identique version précédente) ...
         var enc:MediaCodec?=null; var mux:MediaMuxer?=null; try{
             val fmt=MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC,sampleRate,1)
             fmt.setInteger(MediaFormat.KEY_BIT_RATE,BIT_RATE); fmt.setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC); fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,16384)
@@ -338,7 +302,6 @@ object AudioHelper {
     }
     
     fun normalizeAudio(inputFile: File, outputFile: File, startMs: Long, endMs: Long, sampleRate: Int, targetPeak: Float, onProgress: (Float)->Unit): Boolean {
-        // On utilise decodeToPCM car on a besoin d'analyser tout le fichier pour trouver le Peak Max
         try {
             val content = decodeToPCM(inputFile)
             onProgress(0.5f)

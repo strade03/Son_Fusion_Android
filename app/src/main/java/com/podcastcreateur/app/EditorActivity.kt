@@ -29,7 +29,6 @@ class EditorActivity : AppCompatActivity() {
     private var isPlaying = false
     private var playbackJob: Job? = null
     
-    // ZOOM 2.5f : Ni trop loin, ni trop près
     private var currentZoom = 2.5f 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -149,7 +148,7 @@ class EditorActivity : AppCompatActivity() {
                 val format = extractor.getTrackFormat(idx)
                 val mime = format.getString(MediaFormat.KEY_MIME)!!
                 
-                // On positionne l'extracteur
+                // Positionnement
                 val startSample = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos
                 val endSample = if(binding.waveformView.selectionEnd > startSample) binding.waveformView.selectionEnd else meta.totalSamples.toInt()
                 val startMs = (startSample * 1000L) / meta.sampleRate
@@ -184,10 +183,12 @@ class EditorActivity : AppCompatActivity() {
                     // OUTPUT
                     val outIdx = decoder.dequeueOutputBuffer(info, 5000)
                     
-                    // FIX MP3 RALENTI : ON CRÉE L'AUDIOTRACK ICI
+                    // --- C'EST ICI QUE SE FAIT LA MAGIE POUR FIXER LE MP3 ---
+                    // On attend que le décodeur nous donne la VRAIE fréquence (ex: 48000Hz)
                     if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         val outFormat = decoder.outputFormat
                         val realSampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        
                         val minBuf = AudioTrack.getMinBufferSize(realSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
                         track = AudioTrack(AudioManager.STREAM_MUSIC, realSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf, AudioTrack.MODE_STREAM)
                         track.play()

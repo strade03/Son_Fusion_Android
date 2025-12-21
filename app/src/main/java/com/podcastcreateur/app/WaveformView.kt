@@ -47,14 +47,12 @@ class WaveformView @JvmOverloads constructor(
 
     private var isDraggingSelection = false
     
-    // GESTURE DETECTOR CONFIGURÉ POUR SCROLL VS SELECT
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean {
             return true 
         }
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            // Tap simple : Déplace le curseur, annule la sélection
             playheadPos = pixelToSample(e.x)
             selectionStart = -1
             selectionEnd = -1
@@ -63,15 +61,11 @@ class WaveformView @JvmOverloads constructor(
         }
 
         override fun onLongPress(e: MotionEvent) {
-            // Appui Long : DÉMARRE LA SÉLECTION
             isDraggingSelection = true
             val s = pixelToSample(e.x)
             selectionStart = s
             selectionEnd = s
-            // Feedback tactile (vibreur)
             performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            
-            // Empêche le parent de scroller pendant qu'on sélectionne
             parent?.requestDisallowInterceptTouchEvent(true)
             invalidate()
         }
@@ -132,7 +126,10 @@ class WaveformView @JvmOverloads constructor(
         for (i in points.indices) {
             val x = i * zoomFactor
             val valPeak = points[i] 
-            val barHeight = valPeak * centerY * 0.95f 
+            
+            // ECHELLE RÉDUITE A 0.65f POUR EVITER L'ASPECT "GROS BOUDIN"
+            val barHeight = valPeak * centerY * 0.65f 
+            
             canvas.drawLine(x, centerY - barHeight, x, centerY + barHeight, paint)
         }
 
@@ -162,21 +159,18 @@ class WaveformView @JvmOverloads constructor(
     }
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        // Le gestureDetector gère Tap et LongPress
         if (gestureDetector.onTouchEvent(event)) {
             return true
         }
 
         when(event.action) {
             MotionEvent.ACTION_MOVE -> {
-                // Si on est en mode sélection (activé par LongPress), on met à jour la fin
                 if (isDraggingSelection) {
                     val s = pixelToSample(event.x)
                     selectionEnd = s
                     invalidate()
                     return true
                 }
-                // Sinon, on renvoie false pour laisser le ScrollView parent gérer le scroll
                 return false
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
@@ -184,17 +178,21 @@ class WaveformView @JvmOverloads constructor(
                     isDraggingSelection = false
                     parent?.requestDisallowInterceptTouchEvent(false)
                     
-                    // Remettre start < end
                     if(selectionStart > selectionEnd) {
                         val t = selectionStart; selectionStart = selectionEnd; selectionEnd = t
                     }
+                    
+                    // --- ICI : ON CALE LE CURSEUR DE LECTURE SUR LE DÉBUT DE LA SÉLECTION ---
+                    if (selectionStart >= 0 && selectionStart != selectionEnd) {
+                        playheadPos = selectionStart
+                    }
+                    
                     invalidate()
                     return true
                 }
             }
         }
         
-        // Par défaut, si on n'est pas en train de sélectionner, on laisse le parent gérer (Scroll)
         return false
     }
     
