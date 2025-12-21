@@ -16,7 +16,9 @@ class WaveformView @JvmOverloads constructor(
 
     private val points = ArrayList<Float>()
     private var totalSamplesEstimate = 0L
-    private val samplesPerPoint = 882
+    
+    // NOUVEAU : Variable modifiable pour s'adapter à la fréquence du fichier
+    private var samplesPerPoint = 882 
     private var zoomFactor = 1.0f 
 
     var selectionStart = -1
@@ -71,8 +73,10 @@ class WaveformView @JvmOverloads constructor(
         }
     })
 
-    fun initialize(totalSamples: Long) {
+    // NOUVELLE SIGNATURE : On reçoit le ratio samplesPerPoint calculé
+    fun initialize(totalSamples: Long, ratioSamplesPerPoint: Int) {
         this.totalSamplesEstimate = totalSamples
+        this.samplesPerPoint = ratioSamplesPerPoint
         clearData()
     }
     
@@ -104,10 +108,13 @@ class WaveformView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val totalPoints = if (points.size > 0 && points.size * samplesPerPoint > totalSamplesEstimate) {
+        // Protection division par zéro
+        val spp = if(samplesPerPoint > 0) samplesPerPoint else 882
+        
+        val totalPoints = if (points.size > 0 && points.size * spp > totalSamplesEstimate) {
             points.size.toLong()
         } else {
-            totalSamplesEstimate / samplesPerPoint
+            totalSamplesEstimate / spp
         }
         val contentWidth = (totalPoints * zoomFactor).toInt()
         val finalWidth = resolveSize(contentWidth, widthMeasureSpec)
@@ -144,13 +151,15 @@ class WaveformView @JvmOverloads constructor(
     }
     
     fun sampleToPixel(sample: Int): Float {
-        val pointIndex = sample / samplesPerPoint
+        val spp = if(samplesPerPoint > 0) samplesPerPoint else 882
+        val pointIndex = sample / spp
         return pointIndex * zoomFactor
     }
 
     fun pixelToSample(x: Float): Int {
+        val spp = if(samplesPerPoint > 0) samplesPerPoint else 882
         val pointIndex = x / zoomFactor
-        return (pointIndex * samplesPerPoint).toInt()
+        return (pointIndex * spp).toInt()
     }
     
     fun getCenterSample(scrollX: Int, visibleWidth: Int): Int {

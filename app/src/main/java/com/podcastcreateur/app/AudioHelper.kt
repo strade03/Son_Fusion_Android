@@ -20,7 +20,8 @@ data class AudioContent(
 
 object AudioHelper {
     private const val BIT_RATE = 128000
-    private const val SAMPLES_PER_POINT = 882 
+    // On vise 50 points par seconde pour l'affichage (fluide et précis)
+    private const val POINTS_PER_SECOND = 50 
 
     fun getAudioMetadata(input: File): AudioMetadata? {
         if (!input.exists()) return null
@@ -54,8 +55,14 @@ object AudioHelper {
         }
     }
 
-    fun loadWaveformStream(input: File, onUpdate: (FloatArray) -> Unit) {
+    // --- STREAMING WAVEFORM SYNCHRONISÉ ---
+    fun loadWaveformStream(input: File, sampleRate: Int, onUpdate: (FloatArray) -> Unit) {
         if (!input.exists()) { onUpdate(FloatArray(0)); return }
+        
+        // Calcul dynamique : Combien de samples pour faire 1 point ?
+        // Ex: 44100 / 50 = 882 samples/point
+        // Ex: 48000 / 50 = 960 samples/point
+        val samplesPerPoint = sampleRate / POINTS_PER_SECOND
         
         val extractor = MediaExtractor()
         try {
@@ -106,7 +113,9 @@ object AudioHelper {
                             val sample = abs(shorts.get().toFloat() / 32768f)
                             if (sample > maxPeak) maxPeak = sample
                             count++
-                            if (count >= SAMPLES_PER_POINT) {
+                            
+                            // Utilisation du seuil calculé dynamiquement
+                            if (count >= samplesPerPoint) {
                                 tempBuf.add(maxPeak.coerceAtMost(1.0f))
                                 maxPeak = 0f
                                 count = 0
@@ -127,7 +136,7 @@ object AudioHelper {
         finally { extractor.release() }
     }
 
-    // --- COUPE STREAMING ROBUSTE ---
+    // --- COUPE STREAMING ---
     fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
         var extractor: MediaExtractor? = null
         var decoder: MediaCodec? = null

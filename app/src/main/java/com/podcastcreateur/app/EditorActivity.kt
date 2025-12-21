@@ -84,12 +84,18 @@ class EditorActivity : AppCompatActivity() {
                 return@launch
             }
 
+            // Calcul du ratio pour l'interface graphique
+            // On veut toujours 50 points par seconde pour que l'affichage soit constant
+            val samplesPerPoint = meta.sampleRate / 50
+
             withContext(Dispatchers.Main) {
                 binding.txtDuration.text = formatTime(meta.duration)
-                binding.waveformView.initialize(meta.totalSamples)
+                // On configure la vue avec le ratio précis
+                binding.waveformView.initialize(meta.totalSamples, samplesPerPoint)
             }
 
-            AudioHelper.loadWaveformStream(currentFile) { newChunk ->
+            // On passe le sampleRate pour le calcul dynamique des points
+            AudioHelper.loadWaveformStream(currentFile, meta.sampleRate) { newChunk ->
                 runOnUiThread {
                     binding.waveformView.appendData(newChunk)
                     if (binding.progressBar.visibility == View.VISIBLE) {
@@ -118,11 +124,8 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
-    // --- NOUVELLE LECTURE VIA MEDIAPLAYER ---
     private fun playAudio() {
         val meta = metadata ?: return
-        
-        // Arrêter l'ancien si existant
         stopAudio()
         
         try {
@@ -130,7 +133,6 @@ class EditorActivity : AppCompatActivity() {
                 setDataSource(currentFile.absolutePath)
                 prepare()
                 
-                // Calcul position départ
                 val startSample = if(binding.waveformView.selectionStart >= 0) 
                                     binding.waveformView.selectionStart 
                                   else 
@@ -141,14 +143,11 @@ class EditorActivity : AppCompatActivity() {
                 seekTo(startMs.toInt())
                 start()
                 
-                setOnCompletionListener { 
-                    stopAudio() 
-                }
+                setOnCompletionListener { stopAudio() }
             }
             
             binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
             
-            // Boucle de mise à jour UI (Curseur)
             playbackJob = lifecycleScope.launch {
                 val endSample = if(binding.waveformView.selectionEnd > binding.waveformView.selectionStart && binding.waveformView.selectionStart >= 0) 
                                     binding.waveformView.selectionEnd 
@@ -157,28 +156,19 @@ class EditorActivity : AppCompatActivity() {
                                     
                 while (mediaPlayer?.isPlaying == true) {
                     val currentMs = mediaPlayer?.currentPosition ?: 0
-                    
-                    // Conversion Ms -> Sample
                     val currentSample = ((currentMs.toLong() * meta.sampleRate) / 1000).toInt()
                     
-                    // Mise à jour vue
                     binding.waveformView.playheadPos = currentSample
                     binding.waveformView.invalidate()
                     autoScroll(currentSample)
                     
-                    // Arrêt si fin de sélection atteinte
                     if (binding.waveformView.selectionStart >= 0 && currentSample >= endSample) {
                         mediaPlayer?.pause()
                         break
                     }
-                    
-                    delay(25) // ~40 FPS
+                    delay(25) 
                 }
-                
-                // Fin de lecture (soit arrêt manuel, soit fin selection)
-                if (mediaPlayer?.isPlaying != true) {
-                    stopAudio()
-                }
+                if (mediaPlayer?.isPlaying != true) stopAudio()
             }
             
         } catch (e: Exception) {
@@ -191,7 +181,6 @@ class EditorActivity : AppCompatActivity() {
         val px = binding.waveformView.sampleToPixel(sampleIdx)
         val screenCenter = binding.scroller.width / 2
         val target = (px - screenCenter).toInt().coerceAtLeast(0)
-        // Scroll fluide
         if (abs(binding.scroller.scrollX - target) > 10) {
             binding.scroller.scrollTo(target, 0)
         }
@@ -200,13 +189,10 @@ class EditorActivity : AppCompatActivity() {
     private fun stopAudio() {
         playbackJob?.cancel()
         try {
-            if (mediaPlayer?.isPlaying == true) {
-                mediaPlayer?.stop()
-            }
+            if (mediaPlayer?.isPlaying == true) mediaPlayer?.stop()
             mediaPlayer?.release()
         } catch (e: Exception) {}
         mediaPlayer = null
-        
         binding.btnPlay.setImageResource(R.drawable.ic_play)
     }
 
@@ -216,8 +202,7 @@ class EditorActivity : AppCompatActivity() {
         val end = binding.waveformView.selectionEnd
         if (start < 0 || end <= start) return
         
-        stopAudio() // Arrêter la lecture avant de couper
-        
+        stopAudio() 
         binding.progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
             val tmp = File(currentFile.parent, "tmp_cut.m4a")
@@ -244,9 +229,7 @@ class EditorActivity : AppCompatActivity() {
         val meta = metadata ?: return
         val start = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
         val end = if(binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else meta.totalSamples.toInt()
-        
         stopAudio()
-        
         binding.progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
             val tmp = File(currentFile.parent, "tmp_norm.m4a")
