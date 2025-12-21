@@ -19,12 +19,6 @@ import java.io.File
 import java.nio.ByteOrder
 import kotlin.math.abs
 
-/**
- * ÉDITEUR :
- * - Zoom initial ajusté (2.5f)
- * - Correction lecture MP3 (détection sample rate)
- * - Waveform Streaming
- */
 class EditorActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityEditorBinding
@@ -35,7 +29,7 @@ class EditorActivity : AppCompatActivity() {
     private var isPlaying = false
     private var playbackJob: Job? = null
     
-    // ZOOM INITIAL AJUSTÉ (2.5f au lieu de 10.0f) pour voir plus large au début
+    // ZOOM 2.5f : Ni trop loin, ni trop près
     private var currentZoom = 2.5f 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -48,8 +42,6 @@ class EditorActivity : AppCompatActivity() {
         currentFile = File(path)
         
         binding.txtFilename.text = currentFile.name.replace(Regex("^\\d{3}_"), "")
-        
-        // Initialisation de la vue avec le Zoom par défaut
         binding.waveformView.setZoomLevel(currentZoom)
         
         loadWaveformStreaming()
@@ -89,7 +81,6 @@ class EditorActivity : AppCompatActivity() {
         binding.progressBar.visibility = View.VISIBLE
         
         lifecycleScope.launch(Dispatchers.IO) {
-            // Récupération métadonnées
             metadata = AudioHelper.getAudioMetadata(currentFile)
             val meta = metadata
             
@@ -103,7 +94,6 @@ class EditorActivity : AppCompatActivity() {
                 binding.waveformView.initialize(meta.totalSamples)
             }
 
-            // Chargement de l'onde morceau par morceau
             AudioHelper.loadWaveformStream(currentFile) { newChunk ->
                 runOnUiThread {
                     binding.waveformView.appendData(newChunk)
@@ -126,9 +116,7 @@ class EditorActivity : AppCompatActivity() {
         val clamped = newZoom.coerceIn(0.5f, 50.0f)
         currentZoom = clamped
         val centerSample = binding.waveformView.getCenterSample(binding.scroller.scrollX, binding.scroller.width)
-        
         binding.waveformView.setZoomLevel(currentZoom)
-        
         binding.waveformView.post {
             val newScrollX = binding.waveformView.sampleToPixel(centerSample) - (binding.scroller.width / 2)
             binding.scroller.scrollTo(newScrollX.toInt().coerceAtLeast(0), 0)
@@ -159,38 +147,25 @@ class EditorActivity : AppCompatActivity() {
                 
                 extractor.selectTrack(idx)
                 val format = extractor.getTrackFormat(idx)
+                val mime = format.getString(MediaFormat.KEY_MIME)!!
                 
-                // --- CORRECTION MP3 RALENTI ---
-                // On utilise le sample rate RÉEL du format de piste, pas celui global estimé
-                val actualSampleRate = try {
-                    format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                } catch(e: Exception) { 
-                    meta.sampleRate 
-                }
-
+                // On positionne l'extracteur
                 val startSample = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos
                 val endSample = if(binding.waveformView.selectionEnd > startSample) binding.waveformView.selectionEnd else meta.totalSamples.toInt()
-                
-                // Utilisation de meta.sampleRate pour le calcul de position temporelle (cohérence waveform)
                 val startMs = (startSample * 1000L) / meta.sampleRate
                 extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                
-                val mime = format.getString(MediaFormat.KEY_MIME)!!
+
                 decoder = MediaCodec.createDecoderByType(mime)
                 decoder.configure(format, null, null, 0)
                 decoder.start()
                 
-                // Utilisation de actualSampleRate pour l'AudioTrack (pour que la vitesse soit bonne)
-                val minBuf = AudioTrack.getMinBufferSize(actualSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                track = AudioTrack(AudioManager.STREAM_MUSIC, actualSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf, AudioTrack.MODE_STREAM)
-                track.play()
-                audioTrack = track
-                
                 val info = MediaCodec.BufferInfo()
                 var currentS = startSample
                 var isEOS = false
+                var trackInitialized = false
                 
                 while(isActive && isPlaying && currentS < endSample) {
+                    // INPUT
                     if(!isEOS) {
                         val inIdx = decoder.dequeueInputBuffer(5000)
                         if(inIdx >= 0) {
@@ -206,21 +181,34 @@ class EditorActivity : AppCompatActivity() {
                         }
                     }
                     
+                    // OUTPUT
                     val outIdx = decoder.dequeueOutputBuffer(info, 5000)
+                    
+                    // FIX MP3 RALENTI : ON CRÉE L'AUDIOTRACK ICI
+                    if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        val outFormat = decoder.outputFormat
+                        val realSampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                        val minBuf = AudioTrack.getMinBufferSize(realSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
+                        track = AudioTrack(AudioManager.STREAM_MUSIC, realSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf, AudioTrack.MODE_STREAM)
+                        track.play()
+                        audioTrack = track
+                        trackInitialized = true
+                    }
+                    
                     if(outIdx >= 0) {
-                        val outBuf = decoder.getOutputBuffer(outIdx)
-                        if(outBuf != null && info.size > 0) {
-                            val chunk = ByteArray(info.size)
-                            outBuf.get(chunk)
-                            track.write(chunk, 0, chunk.size)
-                            
-                            val samplesRead = chunk.size / 2
-                            currentS += samplesRead
-                            
-                            withContext(Dispatchers.Main) {
-                                binding.waveformView.playheadPos = currentS
-                                binding.waveformView.invalidate()
-                                autoScroll(currentS)
+                        if (trackInitialized && track != null) {
+                            val outBuf = decoder.getOutputBuffer(outIdx)
+                            if(outBuf != null && info.size > 0) {
+                                val chunk = ByteArray(info.size)
+                                outBuf.get(chunk)
+                                track.write(chunk, 0, chunk.size)
+                                val samplesRead = chunk.size / 2
+                                currentS += samplesRead
+                                withContext(Dispatchers.Main) {
+                                    binding.waveformView.playheadPos = currentS
+                                    binding.waveformView.invalidate()
+                                    autoScroll(currentS)
+                                }
                             }
                         }
                         decoder.releaseOutputBuffer(outIdx, false)
@@ -231,9 +219,7 @@ class EditorActivity : AppCompatActivity() {
             finally {
                 try { track?.stop(); track?.release(); decoder?.release(); extractor?.release() } catch(e:Exception){}
                 isPlaying = false
-                withContext(Dispatchers.Main) {
-                    binding.btnPlay.setImageResource(R.drawable.ic_play)
-                }
+                withContext(Dispatchers.Main) { binding.btnPlay.setImageResource(R.drawable.ic_play) }
             }
         }
     }
@@ -263,27 +249,24 @@ class EditorActivity : AppCompatActivity() {
         
         binding.progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
-            val content = AudioHelper.decodeToPCM(currentFile)
-            val pcm = content.data
-            // Sécurité bornes
-            val sSafe = start.coerceIn(0, pcm.size)
-            val eSafe = end.coerceIn(0, pcm.size)
+            val tmp = File(currentFile.parent, "tmp_cut.m4a")
             
-            if(sSafe < eSafe) {
-                val kept = pcm.sliceArray(0 until sSafe) + pcm.sliceArray(eSafe until pcm.size)
-                val tmp = File(currentFile.parent, "tmp.m4a")
-                if(AudioHelper.savePCMToAAC(kept, tmp, meta.sampleRate)) {
-                    currentFile.delete(); tmp.renameTo(currentFile)
-                    withContext(Dispatchers.Main) {
-                        binding.waveformView.clearData()
-                        loadWaveformStreaming()
-                        Toast.makeText(this@EditorActivity, "Coupé", Toast.LENGTH_SHORT).show()
-                    }
+            // UTILISATION DE LA NOUVELLE FONCTION STREAMING
+            val success = AudioHelper.deleteRegionStreaming(currentFile, tmp, start, end)
+            
+            if(success) {
+                currentFile.delete()
+                tmp.renameTo(currentFile)
+                withContext(Dispatchers.Main) {
+                    binding.waveformView.clearData()
+                    loadWaveformStreaming()
+                    Toast.makeText(this@EditorActivity, "Coupé !", Toast.LENGTH_SHORT).show()
                 }
             } else {
-                 withContext(Dispatchers.Main) {
-                     binding.progressBar.visibility = View.GONE
-                 }
+                withContext(Dispatchers.Main) {
+                    binding.progressBar.visibility = View.GONE
+                    Toast.makeText(this@EditorActivity, "Erreur coupe", Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
@@ -292,7 +275,6 @@ class EditorActivity : AppCompatActivity() {
         val meta = metadata ?: return
         val start = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
         val end = if(binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else meta.totalSamples.toInt()
-        
         binding.progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
             val tmp = File(currentFile.parent, "tmp_norm.m4a")

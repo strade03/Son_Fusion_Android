@@ -45,17 +45,35 @@ class WaveformView @JvmOverloads constructor(
         strokeWidth = 3f
     }
 
-    private var isSelectionMode = true
+    private var isDraggingSelection = false
     
-    // Pour gérer correctement le Drag
-    private var initialTouchX = 0f
-
+    // GESTURE DETECTOR CONFIGURÉ POUR SCROLL VS SELECT
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean {
+            return true 
+        }
+
         override fun onSingleTapUp(e: MotionEvent): Boolean {
+            // Tap simple : Déplace le curseur, annule la sélection
             playheadPos = pixelToSample(e.x)
-            selectionStart = -1; selectionEnd = -1
+            selectionStart = -1
+            selectionEnd = -1
             invalidate()
             return true
+        }
+
+        override fun onLongPress(e: MotionEvent) {
+            // Appui Long : DÉMARRE LA SÉLECTION
+            isDraggingSelection = true
+            val s = pixelToSample(e.x)
+            selectionStart = s
+            selectionEnd = s
+            // Feedback tactile (vibreur)
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            
+            // Empêche le parent de scroller pendant qu'on sélectionne
+            parent?.requestDisallowInterceptTouchEvent(true)
+            invalidate()
         }
     })
 
@@ -114,12 +132,7 @@ class WaveformView @JvmOverloads constructor(
         for (i in points.indices) {
             val x = i * zoomFactor
             val valPeak = points[i] 
-            
-            // CORRECTION AFFICHAGE WAVEFORM
-            // On a remis un multiplicateur normal (0.95f) au lieu de 1.8f
-            // pour que l'onde ne soit pas coupée (saturation visuelle).
             val barHeight = valPeak * centerY * 0.95f 
-            
             canvas.drawLine(x, centerY - barHeight, x, centerY + barHeight, paint)
         }
 
@@ -148,51 +161,41 @@ class WaveformView @JvmOverloads constructor(
         return pixelToSample(centerX.toFloat())
     }
 
-    // GESTION TACTILE CORRIGÉE POUR LA SÉLECTION
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        gestureDetector.onTouchEvent(event)
-        
-        // Empêcher le parent (ScrollView) de voler le focus si on est en train de sélectionner
-        parent?.requestDisallowInterceptTouchEvent(true)
+        // Le gestureDetector gère Tap et LongPress
+        if (gestureDetector.onTouchEvent(event)) {
+            return true
+        }
 
         when(event.action) {
-            MotionEvent.ACTION_DOWN -> {
-                initialTouchX = event.x
-                // Au clic, on prépare une nouvelle sélection, 
-                // mais on ne l'affiche que si l'utilisateur bouge.
-                val s = pixelToSample(event.x)
-                selectionStart = s
-                selectionEnd = s
-                playheadPos = s
-                isSelectionMode = true
-                invalidate()
-            }
             MotionEvent.ACTION_MOVE -> {
-                if(isSelectionMode) {
+                // Si on est en mode sélection (activé par LongPress), on met à jour la fin
+                if (isDraggingSelection) {
                     val s = pixelToSample(event.x)
                     selectionEnd = s
                     invalidate()
+                    return true
                 }
+                // Sinon, on renvoie false pour laisser le ScrollView parent gérer le scroll
+                return false
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                parent?.requestDisallowInterceptTouchEvent(false)
-                
-                // Remise en ordre start < end
-                if(selectionStart > selectionEnd) {
-                    val t = selectionStart; selectionStart = selectionEnd; selectionEnd = t
+                if (isDraggingSelection) {
+                    isDraggingSelection = false
+                    parent?.requestDisallowInterceptTouchEvent(false)
+                    
+                    // Remettre start < end
+                    if(selectionStart > selectionEnd) {
+                        val t = selectionStart; selectionStart = selectionEnd; selectionEnd = t
+                    }
+                    invalidate()
+                    return true
                 }
-                
-                // Si la sélection est minuscule (< 10 points), on considère ça comme un simple clic (pas de sélection)
-                if(abs(selectionEnd - selectionStart) < samplesPerPoint * 10) {
-                    selectionStart = -1
-                    selectionEnd = -1
-                }
-                
-                invalidate()
-                performClick()
             }
         }
-        return true
+        
+        // Par défaut, si on n'est pas en train de sélectionner, on laisse le parent gérer (Scroll)
+        return false
     }
     
     override fun performClick(): Boolean {
