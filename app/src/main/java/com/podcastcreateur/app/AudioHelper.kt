@@ -127,7 +127,7 @@ object AudioHelper {
         finally { extractor.release() }
     }
 
-    // --- COUPE STREAMING ---
+    // --- COUPE STREAMING ROBUSTE ---
     fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
         var extractor: MediaExtractor? = null
         var decoder: MediaCodec? = null

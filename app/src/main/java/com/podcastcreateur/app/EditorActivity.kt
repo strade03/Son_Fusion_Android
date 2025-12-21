@@ -1,12 +1,7 @@
 package com.podcastcreateur.app
 
 import android.content.Intent
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioTrack
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
@@ -16,7 +11,6 @@ import androidx.lifecycle.lifecycleScope
 import com.podcastcreateur.app.databinding.ActivityEditorBinding
 import kotlinx.coroutines.*
 import java.io.File
-import java.nio.ByteOrder
 import kotlin.math.abs
 
 class EditorActivity : AppCompatActivity() {
@@ -25,8 +19,9 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var currentFile: File
     
     private var metadata: AudioMetadata? = null
-    private var audioTrack: AudioTrack? = null
-    private var isPlaying = false
+    
+    // NOUVEAU : MediaPlayer au lieu de AudioTrack/MediaCodec pour la lecture
+    private var mediaPlayer: MediaPlayer? = null
     private var playbackJob: Job? = null
     
     private var currentZoom = 2.5f 
@@ -46,8 +41,9 @@ class EditorActivity : AppCompatActivity() {
         loadWaveformStreaming()
 
         binding.btnPlay.setOnClickListener { 
-            if(!isPlaying) playAudio() else stopAudio() 
+            if(mediaPlayer?.isPlaying == true) stopAudio() else playAudio() 
         }
+        
         binding.btnCut.setOnClickListener { cutSelection() }
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
         binding.btnSave.setOnClickListener { 
@@ -122,106 +118,72 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
+    // --- NOUVELLE LECTURE VIA MEDIAPLAYER ---
     private fun playAudio() {
         val meta = metadata ?: return
-        if (isPlaying) return
-        isPlaying = true
-        binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
-
-        playbackJob = lifecycleScope.launch(Dispatchers.IO) {
-            var extractor: MediaExtractor? = null
-            var decoder: MediaCodec? = null
-            var track: AudioTrack? = null
-            
-            try {
-                extractor = MediaExtractor()
-                extractor.setDataSource(currentFile.absolutePath)
-                var idx = -1
-                for(i in 0 until extractor.trackCount) {
-                    if(extractor.getTrackFormat(i).getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true) {
-                        idx = i; break
-                    }
-                }
-                if(idx < 0) return@launch
+        
+        // Arrêter l'ancien si existant
+        stopAudio()
+        
+        try {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(currentFile.absolutePath)
+                prepare()
                 
-                extractor.selectTrack(idx)
-                val format = extractor.getTrackFormat(idx)
-                val mime = format.getString(MediaFormat.KEY_MIME)!!
+                // Calcul position départ
+                val startSample = if(binding.waveformView.selectionStart >= 0) 
+                                    binding.waveformView.selectionStart 
+                                  else 
+                                    binding.waveformView.playheadPos
                 
-                // Positionnement
-                val startSample = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos
-                val endSample = if(binding.waveformView.selectionEnd > startSample) binding.waveformView.selectionEnd else meta.totalSamples.toInt()
                 val startMs = (startSample * 1000L) / meta.sampleRate
-                extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-
-                decoder = MediaCodec.createDecoderByType(mime)
-                decoder.configure(format, null, null, 0)
-                decoder.start()
                 
-                val info = MediaCodec.BufferInfo()
-                var currentS = startSample
-                var isEOS = false
-                var trackInitialized = false
+                seekTo(startMs.toInt())
+                start()
                 
-                while(isActive && isPlaying && currentS < endSample) {
-                    // INPUT
-                    if(!isEOS) {
-                        val inIdx = decoder.dequeueInputBuffer(5000)
-                        if(inIdx >= 0) {
-                            val buf = decoder.getInputBuffer(inIdx)
-                            val sz = extractor.readSampleData(buf!!, 0)
-                            if(sz < 0) {
-                                decoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-                                isEOS = true
-                            } else {
-                                decoder.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime, 0)
-                                extractor.advance()
-                            }
-                        }
-                    }
-                    
-                    // OUTPUT
-                    val outIdx = decoder.dequeueOutputBuffer(info, 5000)
-                    
-                    // --- C'EST ICI QUE SE FAIT LA MAGIE POUR FIXER LE MP3 ---
-                    // On attend que le décodeur nous donne la VRAIE fréquence (ex: 48000Hz)
-                    if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                        val outFormat = decoder.outputFormat
-                        val realSampleRate = outFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                        
-                        val minBuf = AudioTrack.getMinBufferSize(realSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
-                        track = AudioTrack(AudioManager.STREAM_MUSIC, realSampleRate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT, minBuf, AudioTrack.MODE_STREAM)
-                        track.play()
-                        audioTrack = track
-                        trackInitialized = true
-                    }
-                    
-                    if(outIdx >= 0) {
-                        if (trackInitialized && track != null) {
-                            val outBuf = decoder.getOutputBuffer(outIdx)
-                            if(outBuf != null && info.size > 0) {
-                                val chunk = ByteArray(info.size)
-                                outBuf.get(chunk)
-                                track.write(chunk, 0, chunk.size)
-                                val samplesRead = chunk.size / 2
-                                currentS += samplesRead
-                                withContext(Dispatchers.Main) {
-                                    binding.waveformView.playheadPos = currentS
-                                    binding.waveformView.invalidate()
-                                    autoScroll(currentS)
-                                }
-                            }
-                        }
-                        decoder.releaseOutputBuffer(outIdx, false)
-                        if(info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                    }
+                setOnCompletionListener { 
+                    stopAudio() 
                 }
-            } catch(e: Exception) { e.printStackTrace() }
-            finally {
-                try { track?.stop(); track?.release(); decoder?.release(); extractor?.release() } catch(e:Exception){}
-                isPlaying = false
-                withContext(Dispatchers.Main) { binding.btnPlay.setImageResource(R.drawable.ic_play) }
             }
+            
+            binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
+            
+            // Boucle de mise à jour UI (Curseur)
+            playbackJob = lifecycleScope.launch {
+                val endSample = if(binding.waveformView.selectionEnd > binding.waveformView.selectionStart && binding.waveformView.selectionStart >= 0) 
+                                    binding.waveformView.selectionEnd 
+                                else 
+                                    meta.totalSamples.toInt()
+                                    
+                while (mediaPlayer?.isPlaying == true) {
+                    val currentMs = mediaPlayer?.currentPosition ?: 0
+                    
+                    // Conversion Ms -> Sample
+                    val currentSample = ((currentMs.toLong() * meta.sampleRate) / 1000).toInt()
+                    
+                    // Mise à jour vue
+                    binding.waveformView.playheadPos = currentSample
+                    binding.waveformView.invalidate()
+                    autoScroll(currentSample)
+                    
+                    // Arrêt si fin de sélection atteinte
+                    if (binding.waveformView.selectionStart >= 0 && currentSample >= endSample) {
+                        mediaPlayer?.pause()
+                        break
+                    }
+                    
+                    delay(25) // ~40 FPS
+                }
+                
+                // Fin de lecture (soit arrêt manuel, soit fin selection)
+                if (mediaPlayer?.isPlaying != true) {
+                    stopAudio()
+                }
+            }
+            
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -229,16 +191,22 @@ class EditorActivity : AppCompatActivity() {
         val px = binding.waveformView.sampleToPixel(sampleIdx)
         val screenCenter = binding.scroller.width / 2
         val target = (px - screenCenter).toInt().coerceAtLeast(0)
+        // Scroll fluide
         if (abs(binding.scroller.scrollX - target) > 10) {
             binding.scroller.scrollTo(target, 0)
         }
     }
 
     private fun stopAudio() {
-        isPlaying = false
         playbackJob?.cancel()
-        audioTrack?.pause()
-        audioTrack?.flush()
+        try {
+            if (mediaPlayer?.isPlaying == true) {
+                mediaPlayer?.stop()
+            }
+            mediaPlayer?.release()
+        } catch (e: Exception) {}
+        mediaPlayer = null
+        
         binding.btnPlay.setImageResource(R.drawable.ic_play)
     }
 
@@ -248,11 +216,11 @@ class EditorActivity : AppCompatActivity() {
         val end = binding.waveformView.selectionEnd
         if (start < 0 || end <= start) return
         
+        stopAudio() // Arrêter la lecture avant de couper
+        
         binding.progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
             val tmp = File(currentFile.parent, "tmp_cut.m4a")
-            
-            // UTILISATION DE LA NOUVELLE FONCTION STREAMING
             val success = AudioHelper.deleteRegionStreaming(currentFile, tmp, start, end)
             
             if(success) {
@@ -276,6 +244,9 @@ class EditorActivity : AppCompatActivity() {
         val meta = metadata ?: return
         val start = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
         val end = if(binding.waveformView.selectionEnd > start) binding.waveformView.selectionEnd else meta.totalSamples.toInt()
+        
+        stopAudio()
+        
         binding.progressBar.visibility = View.VISIBLE
         lifecycleScope.launch(Dispatchers.IO) {
             val tmp = File(currentFile.parent, "tmp_norm.m4a")

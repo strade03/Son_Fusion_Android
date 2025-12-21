@@ -127,7 +127,7 @@ class WaveformView @JvmOverloads constructor(
             val x = i * zoomFactor
             val valPeak = points[i] 
             
-            // ECHELLE RÉDUITE A 0.65f POUR EVITER L'ASPECT "GROS BOUDIN"
+            // ÉCHELLE REDUITE A 0.65f POUR UN RENDU PLUS FIN
             val barHeight = valPeak * centerY * 0.65f 
             
             canvas.drawLine(x, centerY - barHeight, x, centerY + barHeight, paint)
@@ -182,7 +182,7 @@ class WaveformView @JvmOverloads constructor(
                         val t = selectionStart; selectionStart = selectionEnd; selectionEnd = t
                     }
                     
-                    // --- ICI : ON CALE LE CURSEUR DE LECTURE SUR LE DÉBUT DE LA SÉLECTION ---
+                    // --- PLACE LE CURSEUR AU DÉBUT DE LA SÉLECTION ---
                     if (selectionStart >= 0 && selectionStart != selectionEnd) {
                         playheadPos = selectionStart
                     }
