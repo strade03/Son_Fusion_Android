@@ -16,51 +16,47 @@ data class AudioMetadata(
 object AudioHelper {
     private const val BIT_RATE = 128000
     
-    // Cette valeur servira de base, mais sera ajustée dynamiquement dans l'Activity
-    const val BASE_POINTS_PER_SECOND = 50 
-
+    // Récupération précise des métadonnées (Support Stéréo)
     fun getAudioMetadata(input: File): AudioMetadata? {
         if (!input.exists()) return null
-        val retriever = MediaMetadataRetriever()
+        val extractor = MediaExtractor()
         return try {
-            retriever.setDataSource(input.absolutePath)
-            val durationMs = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0L
-            val sampleRate = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_SAMPLERATE)?.toInt() ?: 44100
-            val totalSamples = (durationMs * sampleRate) / 1000
-            AudioMetadata(sampleRate, 1, durationMs, totalSamples)
+            extractor.setDataSource(input.absolutePath)
+            val trackIdx = selectAudioTrack(extractor)
+            if (trackIdx < 0) return null
+            val format = extractor.getTrackFormat(trackIdx)
+            
+            val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
+            val channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
+            val duration = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) / 1000 else 0L
+            
+            // Total samples (Données PCM brutes) = Durée * Taux * Canaux
+            val totalSamples = (duration * sampleRate * channels) / 1000
+            
+            AudioMetadata(sampleRate, channels, duration, totalSamples)
         } catch (e: Exception) {
             e.printStackTrace()
             null
         } finally {
-            retriever.release()
+            extractor.release()
         }
     }
 
-    /**
-     * NOUVEAU : Applique une liste de zones à couper (en samples) et sauvegarde le fichier final.
-     * cutRanges = Liste de paires (StartSample, EndSample) à SUPPRIMER.
-     */
+    // Sauvegarde avec coupes (Support Stéréo)
     fun saveWithCuts(input: File, output: File, cutRanges: List<Pair<Long, Long>>): Boolean {
-        // On trie les coupes pour être sûr
         val sortedCuts = cutRanges.sortedBy { it.first }
-        
         return runTranscode(input, output) { sampleIndex, sampleValue ->
-            // Vérifier si le sample actuel est dans une zone de coupe
             var shouldKeep = true
             for (range in sortedCuts) {
                 if (sampleIndex >= range.first && sampleIndex < range.second) {
                     shouldKeep = false
                     break
                 }
-                // Optimisation: si on a dépassé le range, pas besoin de vérifier les suivants (car triés)
                 if (sampleIndex < range.first) break 
             }
-            
             if (shouldKeep) sampleValue else null
         }
     }
-
-    // --- Garde les anciennes fonctions pour compatibilité si besoin ---
 
     fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
         return runTranscode(input, output) { sampleIndex, sampleValue ->
@@ -84,7 +80,6 @@ object AudioHelper {
 
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
-            
             while (!isEOS) {
                 val inIdx = decoder.dequeueInputBuffer(1000)
                 if (inIdx >= 0) {
@@ -98,7 +93,6 @@ object AudioHelper {
                         extractor.advance()
                     }
                 }
-                
                 var outIdx = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                 while (outIdx >= 0) {
                     val outBuf = decoder.getOutputBuffer(outIdx)
@@ -129,11 +123,26 @@ object AudioHelper {
         }
     }
 
+    // Fusion des fichiers (Support Stéréo : Utilise le format du 1er fichier)
     fun mergeFiles(inputs: List<File>, output: File): Boolean {
         if (inputs.isEmpty()) return false
         
-        val sampleRate = 44100
-        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1)
+        // 1. Scanner le premier fichier pour déterminer le format (Mono/Stéréo)
+        var sampleRate = 44100
+        var channels = 1
+        
+        val scanEx = MediaExtractor()
+        try {
+            scanEx.setDataSource(inputs[0].absolutePath)
+            val idx = selectAudioTrack(scanEx)
+            if (idx >= 0) {
+                val f = scanEx.getTrackFormat(idx)
+                if (f.containsKey(MediaFormat.KEY_SAMPLE_RATE)) sampleRate = f.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                if (f.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) channels = f.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+            }
+        } catch(e:Exception){} finally { scanEx.release() }
+
+        val format = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels)
         format.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
         format.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
         format.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)
@@ -241,6 +250,7 @@ object AudioHelper {
         }
     }
 
+    // Moteur principal : Détecte et respecte le Stéréo/Mono
     private fun runTranscode(input: File, output: File, process: (Long, Short) -> Short?): Boolean {
         var extractor: MediaExtractor? = null
         var decoder: MediaCodec? = null
@@ -255,13 +265,18 @@ object AudioHelper {
             if (trackIdx < 0) return false
             extractor.selectTrack(trackIdx)
             val format = extractor.getTrackFormat(trackIdx)
-            val sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
             
-            decoder = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
+            // DÉTECTION DES CANAUX (Le fix est ICI)
+            val channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
+            
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return false
+            decoder = MediaCodec.createDecoderByType(mime)
             decoder.configure(format, null, null, 0)
             decoder.start()
 
-            val encFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, 1)
+            // Configuration encodeur avec le MEME nombre de canaux
+            val encFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels)
             encFormat.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
             encFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
             encFormat.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE, 16384)

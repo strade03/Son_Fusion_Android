@@ -33,8 +33,6 @@ class EditorActivity : AppCompatActivity() {
 
     private val pendingCuts = ArrayList<Pair<Long, Long>>() 
     
-    // CORRECTION SYNCHRO : On utilise un Double pour la précision
-    // C'est le nombre de millisecondes que représente 1 pixel/point de l'onde
     private var msPerPoint: Double = 20.0 
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -93,8 +91,6 @@ class EditorActivity : AppCompatActivity() {
                 totalDurationMs = meta.duration
             }
             
-            // On garde l'estimation pour la demande de compression, 
-            // mais on ne s'en sert plus pour la synchro.
             val durationSec = (totalDurationMs / 1000).coerceAtLeast(1)
             val requestPps = when {
                 durationSec < 60 -> 400
@@ -109,8 +105,6 @@ class EditorActivity : AppCompatActivity() {
             ).get({ result ->
                 val amplitudes = result.amplitudesAsList()
                 
-                // --- CORRECTION SYNCHRO CRITIQUE ---
-                // On recalcule le ratio EXACT basé sur ce qu'Amplituda a VRAIMENT renvoyé
                 if (amplitudes.isNotEmpty() && totalDurationMs > 0) {
                     msPerPoint = totalDurationMs.toDouble() / amplitudes.size.toDouble()
                 }
@@ -152,7 +146,6 @@ class EditorActivity : AppCompatActivity() {
 
         stopAudio()
         
-        // Calcul avec le ratio précis
         val visualStartMs = (startIdx * msPerPoint).toLong()
         val visualEndMs = (endIdx * msPerPoint).toLong()
         val durationCut = visualEndMs - visualStartMs
@@ -163,8 +156,6 @@ class EditorActivity : AppCompatActivity() {
         pendingCuts.add(Pair(realStartMs, realEndMs))
         binding.waveformView.deleteRange(startIdx, endIdx)
         
-        // Recalculer l'affichage du temps total (virtuel)
-        // On soustrait la durée de toutes les coupes
         var totalCutMs = 0L
         pendingCuts.forEach { totalCutMs += (it.second - it.first) }
         val displayDuration = totalDurationMs - totalCutMs
@@ -178,10 +169,7 @@ class EditorActivity : AppCompatActivity() {
         var realMs = visualMs
         val sortedCuts = pendingCuts.sortedBy { it.first }
         for (cut in sortedCuts) {
-            // Si la coupe est avant le point que je cherche dans le référentiel réel
             if (cut.first < realMs) {
-                 // Attention : realMs avance, donc on peut "dépasser" d'autres coupes
-                 // Logique simplifiée : on ajoute la durée de la coupe
                  realMs += (cut.second - cut.first)
             }
         }
@@ -198,7 +186,9 @@ class EditorActivity : AppCompatActivity() {
             val samplesCuts = ArrayList<Pair<Long, Long>>()
             val meta = AudioHelper.getAudioMetadata(currentFile) ?: return@launch
             
-            val samplesPerMs = meta.sampleRate / 1000.0
+            // CORRECTION STÉRÉO ICI : Multiplier par le nombre de canaux
+            val samplesPerMs = (meta.sampleRate * meta.channelCount) / 1000.0
+            
             for (cut in pendingCuts) {
                 val sStart = (cut.first * samplesPerMs).toLong()
                 val sEnd = (cut.second * samplesPerMs).toLong()
@@ -291,7 +281,6 @@ class EditorActivity : AppCompatActivity() {
                     }
                     
                     if (!inCut) {
-                        // Real -> Visual
                         var visualMs = currentRealMs
                         for (cut in sortedCuts) {
                             if (currentRealMs > cut.second) {
@@ -299,7 +288,6 @@ class EditorActivity : AppCompatActivity() {
                             }
                         }
                         
-                        // CORRECTION SYNCHRO : Utilisation de msPerPoint (Double)
                         val currentIdx = (visualMs / msPerPoint).toInt()
                         
                         binding.waveformView.playheadPos = currentIdx
