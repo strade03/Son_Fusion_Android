@@ -29,6 +29,9 @@ class EditorActivity : AppCompatActivity() {
     private var sampleRate = 44100
     private var currentChannels = 1
 
+    private var audioTrack: AudioTrack? = null
+    private var isPlaying = false  
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityEditorBinding.inflate(layoutInflater)
@@ -146,50 +149,72 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun playAudio() {
-        stopAudio()
-        try {
-            mediaPlayer = MediaPlayer().apply {
-                setDataSource(currentFile.absolutePath)
-                prepare()
-                
-                val startIndex = if(binding.waveformView.selectionStart >= 0) 
-                                    binding.waveformView.selectionStart 
-                                  else 
-                                    binding.waveformView.playheadPos
-                
-                val startMs = startIndex * (1000 / AudioHelper.POINTS_PER_SECOND)
-                seekTo(startMs)
-                start()
-                setOnCompletionListener { stopAudio() }
-            }
+        val pcm = workingPcm ?: return
+        if (isPlaying) { stopAudio(); return }
+
+        // 1. Calculer la position de départ dans le tableau PCM
+        val samplesPerPoint = (sampleRate * currentChannels) / AudioHelper.POINTS_PER_SECOND
+        val startIndex = if (binding.waveformView.selectionStart >= 0) 
+                            binding.waveformView.selectionStart 
+                        else 
+                            binding.waveformView.playheadPos
+        
+        var currentSampleOffset = startIndex * samplesPerPoint
+        val endSampleLimit = if (binding.waveformView.selectionEnd > binding.waveformView.selectionStart && binding.waveformView.selectionStart >= 0)
+                                binding.waveformView.selectionEnd * samplesPerPoint
+                            else 
+                                pcm.size
+
+        // 2. Configurer AudioTrack (Mono ou Stéréo)
+        val channelConfig = if (currentChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
+        val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
+
+        audioTrack = AudioTrack.Builder()
+            .setAudioAttributes(AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build())
+            .setAudioFormat(AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(sampleRate)
+                .setChannelMask(channelConfig)
+                .build())
+            .setBufferSizeInBytes(bufferSize)
+            .setTransferMode(AudioTrack.MODE_STREAM)
+            .build()
+
+        isPlaying = true
+        binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
+
+        // 3. Lancer la lecture dans un thread séparé (Coroutine)
+        playbackJob = lifecycleScope.launch(Dispatchers.IO) {
+            audioTrack?.play()
             
-            binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
+            val tempBuffer = ShortArray(bufferSize / 2)
             
-            playbackJob = lifecycleScope.launch {
-                val endIndex = if(binding.waveformView.selectionEnd > binding.waveformView.selectionStart && binding.waveformView.selectionStart >= 0) 
-                                    binding.waveformView.selectionEnd 
-                                else 
-                                    Int.MAX_VALUE
-                                    
-                while (mediaPlayer?.isPlaying == true) {
-                    val currentMs = mediaPlayer?.currentPosition?.toLong() ?: 0L
-                    val currentIndex = ((currentMs * AudioHelper.POINTS_PER_SECOND) / 1000).toInt()
-                    
+            while (isPlaying && currentSampleOffset < endSampleLimit) {
+                val remaining = endSampleLimit - currentSampleOffset
+                val toWrite = minOf(tempBuffer.size, remaining)
+                
+                // Copier une partie du PCM vers le buffer temporaire
+                System.arraycopy(pcm, currentSampleOffset, tempBuffer, 0, toWrite)
+                
+                // Envoyer au haut-parleur
+                val written = audioTrack?.write(tempBuffer, 0, toWrite) ?: 0
+                if (written <= 0) break
+                
+                currentSampleOffset += written
+                
+                // Mettre à jour l'UI (Playhead)
+                val currentIndex = currentSampleOffset / samplesPerPoint
+                withContext(Dispatchers.Main) {
                     binding.waveformView.playheadPos = currentIndex
                     binding.waveformView.invalidate()
-                    runOnUiThread { updateCurrentTimeDisplay(currentIndex) }
+                    updateCurrentTimeDisplay(currentIndex)
                     autoScroll(currentIndex)
-                    
-                    if (binding.waveformView.selectionStart >= 0 && currentIndex >= endIndex) {
-                        mediaPlayer?.pause()
-                        break
-                    }
-                    delay(25) 
                 }
-                if (mediaPlayer?.isPlaying != true) stopAudio()
             }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show()
+            withContext(Dispatchers.Main) { stopAudio() }
         }
     }
 
@@ -203,12 +228,15 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun stopAudio() {
+        isPlaying = false
         playbackJob?.cancel()
         try {
-            if (mediaPlayer?.isPlaying == true) mediaPlayer?.stop()
-            mediaPlayer?.release()
+            audioTrack?.pause()
+            audioTrack?.flush()
+            audioTrack?.stop()
+            audioTrack?.release()
         } catch (e: Exception) {}
-        mediaPlayer = null
+        audioTrack = null
         binding.btnPlay.setImageResource(R.drawable.ic_play)
     }
 

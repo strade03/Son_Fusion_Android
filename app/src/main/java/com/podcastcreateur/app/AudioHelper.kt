@@ -25,7 +25,7 @@ object AudioHelper {
     
     // CIBLE : 50 points par seconde (1 point = 20ms)
     const val POINTS_PER_SECOND = 50 
-    
+
     private fun getDurationAccurate(file: File): Long {
         val retriever = MediaMetadataRetriever()
         return try {
