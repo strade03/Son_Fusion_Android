@@ -33,8 +33,9 @@ android {
         viewBinding true
     }
     packagingOptions {
-    jniLibs {
-        useLegacyPackaging = false
+        jniLibs {
+            useLegacyPackaging = false
+        }
     }
 
 }
