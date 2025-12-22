@@ -32,7 +32,7 @@ class WaveformView @JvmOverloads constructor(
     }
 
     private val outOfBoundsPaint = Paint().apply {
-        color = Color.parseColor("#BDBDBD") // Gris plus foncé pour le "vide"
+        color = Color.parseColor("#BDBDBD")
         style = Paint.Style.FILL
     }
 
@@ -100,6 +100,29 @@ class WaveformView @JvmOverloads constructor(
         invalidate()
     }
     
+    // NOUVEAU: Supprimer une plage de données visuellement
+    fun deleteRange(start: Int, end: Int) {
+        if (start < 0 || end > points.size || start >= end) return
+        
+        // On supprime les éléments de la liste
+        val count = end - start
+        for (i in 0 until count) {
+            points.removeAt(start)
+        }
+        
+        // Reset sélection
+        selectionStart = -1
+        selectionEnd = -1
+        
+        // Recalculer position playhead si nécessaire
+        if (playheadPos > start) {
+            playheadPos = (playheadPos - count).coerceAtLeast(start)
+        }
+        
+        requestLayout()
+        invalidate()
+    }
+    
     fun setZoomLevel(factor: Float) {
         zoomFactor = factor
         requestLayout()
@@ -113,16 +136,15 @@ class WaveformView @JvmOverloads constructor(
     }
 
     override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
-        val total = if (points.size > totalPointsEstimate) points.size.toLong() else totalPointsEstimate
-        val contentWidth = (total * zoomFactor).toInt()
+        val currentSize = points.size.toLong()
+        // Utiliser la taille réelle si on a chargé, sinon l'estimation
+        val total = if (currentSize > 0) currentSize else totalPointsEstimate
         
-        // On récupère la largeur de l'écran (parent)
+        val contentWidth = (total * zoomFactor).toInt()
         val parentWidth = MeasureSpec.getSize(widthMeasureSpec)
         
-        // On force la vue à être AU MOINS aussi large que l'écran + une marge de confort
-        // pour pouvoir scroller un peu après la fin
+        // Toujours au moins la largeur de l'écran
         val finalWidth = contentWidth.coerceAtLeast(parentWidth)
-        
         val finalHeight = getDefaultSize(suggestedMinimumHeight, heightMeasureSpec)
         setMeasuredDimension(finalWidth, finalHeight)
     }
@@ -133,7 +155,6 @@ class WaveformView @JvmOverloads constructor(
         val h = height.toFloat()
         val centerY = h / 2f
         
-        // --- Dessiner le fond de la zone "après le son" ---
         val audioEndX = points.size * zoomFactor
         if (audioEndX < width) {
             canvas.drawRect(audioEndX, 0f, width.toFloat(), h, outOfBoundsPaint)
@@ -141,7 +162,14 @@ class WaveformView @JvmOverloads constructor(
 
         canvas.drawLine(0f, centerY, width.toFloat(), centerY, centerLinePaint)
 
-        for (i in points.indices) {
+        // Optimisation : Ne dessiner que ce qui est visible à l'écran
+        val scrollX = (parent as? View)?.scrollX ?: 0
+        val visibleWidth = (parent as? View)?.width ?: width
+        
+        val startIdx = pixelToIndex(scrollX.toFloat()).coerceAtLeast(0)
+        val endIdx = pixelToIndex((scrollX + visibleWidth).toFloat()).coerceAtMost(points.size - 1)
+
+        for (i in startIdx..endIdx) {
             val x = i * zoomFactor
             val valPeak = points[i] 
             val barHeight = valPeak * centerY * 0.95f 
@@ -163,6 +191,7 @@ class WaveformView @JvmOverloads constructor(
     }
 
     fun pixelToIndex(x: Float): Int {
+        if (zoomFactor == 0f) return 0
         return (x / zoomFactor).toInt()
     }
     
@@ -212,6 +241,6 @@ class WaveformView @JvmOverloads constructor(
     }
 
     fun getPointsCount(): Int {
-    return points.size
+        return points.size
     }
 }

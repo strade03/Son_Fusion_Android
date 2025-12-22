@@ -15,7 +15,9 @@ data class AudioMetadata(
 
 object AudioHelper {
     private const val BIT_RATE = 128000
-    const val POINTS_PER_SECOND = 50 
+    
+    // Cette valeur servira de base, mais sera ajustée dynamiquement dans l'Activity
+    const val BASE_POINTS_PER_SECOND = 50 
 
     fun getAudioMetadata(input: File): AudioMetadata? {
         if (!input.exists()) return null
@@ -34,13 +36,35 @@ object AudioHelper {
         }
     }
 
+    /**
+     * NOUVEAU : Applique une liste de zones à couper (en samples) et sauvegarde le fichier final.
+     * cutRanges = Liste de paires (StartSample, EndSample) à SUPPRIMER.
+     */
+    fun saveWithCuts(input: File, output: File, cutRanges: List<Pair<Long, Long>>): Boolean {
+        // On trie les coupes pour être sûr
+        val sortedCuts = cutRanges.sortedBy { it.first }
+        
+        return runTranscode(input, output) { sampleIndex, sampleValue ->
+            // Vérifier si le sample actuel est dans une zone de coupe
+            var shouldKeep = true
+            for (range in sortedCuts) {
+                if (sampleIndex >= range.first && sampleIndex < range.second) {
+                    shouldKeep = false
+                    break
+                }
+                // Optimisation: si on a dépassé le range, pas besoin de vérifier les suivants (car triés)
+                if (sampleIndex < range.first) break 
+            }
+            
+            if (shouldKeep) sampleValue else null
+        }
+    }
+
+    // --- Garde les anciennes fonctions pour compatibilité si besoin ---
+
     fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
         return runTranscode(input, output) { sampleIndex, sampleValue ->
-            if (sampleIndex in startSample until endSample) {
-                null 
-            } else {
-                sampleValue 
-            }
+            if (sampleIndex in startSample until endSample) null else sampleValue 
         }
     }
 
@@ -120,16 +144,12 @@ object AudioHelper {
 
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var muxerTrackIndex = -1
-        
-        // CORRECTION: Définition hors du try pour visibilité dans finally
         var muxerStarted = false 
-        
         val encBufferInfo = MediaCodec.BufferInfo()
 
         try {
             for (input in inputs) {
                 if (!input.exists()) continue
-                
                 val extractor = MediaExtractor()
                 extractor.setDataSource(input.absolutePath)
                 val trackIdx = selectAudioTrack(extractor)
@@ -171,7 +191,6 @@ object AudioHelper {
                         outIdx = decoder.dequeueOutputBuffer(bufferInfo, 2000)
                     }
                     
-                    // --- Drain Encoder Inline ---
                     var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
                     while (encOutIdx >= 0 || encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -198,7 +217,6 @@ object AudioHelper {
             val inIdx = encoder.dequeueInputBuffer(2000)
             if (inIdx >= 0) encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             
-            // Final Drain
             var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
             while (encOutIdx >= 0) {
                 if (encOutIdx >= 0) {
@@ -213,7 +231,6 @@ object AudioHelper {
                 }
                 encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
             }
-            
             return true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -229,8 +246,6 @@ object AudioHelper {
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
-        
-        // CORRECTION MAJEURE: muxerStarted déclaré ici pour être vu dans le finally
         var muxerStarted = false 
         
         try {
@@ -257,7 +272,6 @@ object AudioHelper {
 
             muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             val encBufferInfo = MediaCodec.BufferInfo()
-            
             val bufferInfo = MediaCodec.BufferInfo()
             var muxerTrackIndex = -1
             
@@ -316,7 +330,6 @@ object AudioHelper {
                     outIdx = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                 }
                 
-                // --- Drain Encoder Inline ---
                 var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
                 while (encOutIdx >= 0 || encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
