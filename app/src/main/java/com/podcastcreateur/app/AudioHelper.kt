@@ -346,3 +346,30 @@ object AudioHelper {
             try { encoder?.stop(); encoder?.release() } catch(e:Exception){}
             try { if (muxer != null && muxerStarted) muxer.stop(); muxer?.release() } catch(e:Exception){}
             try { extractor?.release() } catch(e:Exception){}
+        }
+    }
+
+    private fun feedEncoder(encoder: MediaCodec, data: ByteArray) {
+        var offset = 0
+        while (offset < data.size) {
+            val inIdx = encoder.dequeueInputBuffer(2000)
+            if (inIdx >= 0) {
+                val buf = encoder.getInputBuffer(inIdx)
+                val remaining = data.size - offset
+                val toWrite = if (remaining > buf!!.capacity()) buf.capacity() else remaining
+                buf.clear()
+                buf.put(data, offset, toWrite)
+                encoder.queueInputBuffer(inIdx, 0, toWrite, System.nanoTime()/1000, 0)
+                offset += toWrite
+            }
+        }
+    }
+
+    private fun selectAudioTrack(extractor: MediaExtractor): Int {
+        for (i in 0 until extractor.trackCount) {
+            val format = extractor.getTrackFormat(i)
+            if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) return i
+        }
+        return -1
+    }
+}
