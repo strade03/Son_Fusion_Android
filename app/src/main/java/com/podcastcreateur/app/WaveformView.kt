@@ -72,6 +72,8 @@ class WaveformView @JvmOverloads constructor(
             val s = pixelToIndex(e.x)
             selectionStart = s
             selectionEnd = s
+            playheadPos = s
+            onPositionChanged?.invoke(playheadPos)
             performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
             parent?.requestDisallowInterceptTouchEvent(true)
             invalidate()
@@ -194,6 +196,7 @@ class WaveformView @JvmOverloads constructor(
                     }
                     if (selectionStart >= 0 && selectionStart != selectionEnd) {
                         playheadPos = selectionStart
+                        onPositionChanged?.invoke(playheadPos)
                     }
                     invalidate()
                     return true
