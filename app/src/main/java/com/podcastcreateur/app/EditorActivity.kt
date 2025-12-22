@@ -13,6 +13,7 @@ import linc.com.amplituda.Amplituda
 import linc.com.amplituda.Compress
 import kotlinx.coroutines.*
 import java.io.File
+import kotlin.math.abs
 
 class EditorActivity : AppCompatActivity() {
 
