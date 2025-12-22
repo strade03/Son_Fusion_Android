@@ -21,7 +21,9 @@ class WaveformView @JvmOverloads constructor(
     var selectionStart = -1
     var selectionEnd = -1
     var playheadPos = 0
-
+    
+    var onPositionChanged: ((Int) -> Unit)? = null
+  
     private val paint = Paint().apply {
         color = Color.parseColor("#3F51B5")
         strokeWidth = 2f
@@ -60,6 +62,7 @@ class WaveformView @JvmOverloads constructor(
             playheadPos = pixelToIndex(e.x)
             selectionStart = -1
             selectionEnd = -1
+            onPositionChanged?.invoke(playheadPos)
             invalidate()
             return true
         }

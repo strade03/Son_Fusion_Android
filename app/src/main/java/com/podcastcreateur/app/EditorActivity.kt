@@ -38,6 +38,8 @@ class EditorActivity : AppCompatActivity() {
         
         loadWaveformStreaming()
 
+        binding.waveformView.onPositionChanged = { index -> updateCurrentTimeDisplay(index)}
+
         binding.btnPlay.setOnClickListener { 
             if(mediaPlayer?.isPlaying == true) stopAudio() else playAudio() 
         }
@@ -100,6 +102,12 @@ class EditorActivity : AppCompatActivity() {
         }
     }
 
+    private fun updateCurrentTimeDisplay(index: Int) {
+        // Calcul : index * 20ms (car 50 points par seconde)
+        val ms = index.toLong() * (1000 / AudioHelper.POINTS_PER_SECOND)
+        binding.txtCurrentTime.text = formatTime(ms)
+    }
+    
     private fun formatTime(durationMs: Long): String {
         val sec = (durationMs / 1000).toInt()
         val m = sec / 60
@@ -157,6 +165,7 @@ class EditorActivity : AppCompatActivity() {
                     
                     binding.waveformView.playheadPos = currentIndex
                     binding.waveformView.invalidate()
+                    runOnUiThread { updateCurrentTimeDisplay(currentIndex) }
                     autoScroll(currentIndex)
                     
                     if (binding.waveformView.selectionStart >= 0 && currentIndex >= endIndex) {
