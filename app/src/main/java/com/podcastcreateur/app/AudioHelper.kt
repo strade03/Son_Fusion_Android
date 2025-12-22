@@ -120,7 +120,10 @@ object AudioHelper {
 
         val muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
         var muxerTrackIndex = -1
-        var muxerStarted = false
+        
+        // CORRECTION: Définition hors du try pour visibilité dans finally
+        var muxerStarted = false 
+        
         val encBufferInfo = MediaCodec.BufferInfo()
 
         try {
@@ -227,6 +230,9 @@ object AudioHelper {
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
         
+        // CORRECTION MAJEURE: muxerStarted déclaré ici pour être vu dans le finally
+        var muxerStarted = false 
+        
         try {
             extractor = MediaExtractor()
             extractor.setDataSource(input.absolutePath)
@@ -254,7 +260,7 @@ object AudioHelper {
             
             val bufferInfo = MediaCodec.BufferInfo()
             var muxerTrackIndex = -1
-            var muxerStarted = false
+            
             var totalSamplesProcessed = 0L
             var isInputEOS = false
             var isDecodedEOS = false
@@ -340,30 +346,3 @@ object AudioHelper {
             try { encoder?.stop(); encoder?.release() } catch(e:Exception){}
             try { if (muxer != null && muxerStarted) muxer.stop(); muxer?.release() } catch(e:Exception){}
             try { extractor?.release() } catch(e:Exception){}
-        }
-    }
-
-    private fun feedEncoder(encoder: MediaCodec, data: ByteArray) {
-        var offset = 0
-        while (offset < data.size) {
-            val inIdx = encoder.dequeueInputBuffer(2000)
-            if (inIdx >= 0) {
-                val buf = encoder.getInputBuffer(inIdx)
-                val remaining = data.size - offset
-                val toWrite = if (remaining > buf!!.capacity()) buf.capacity() else remaining
-                buf.clear()
-                buf.put(data, offset, toWrite)
-                encoder.queueInputBuffer(inIdx, 0, toWrite, System.nanoTime()/1000, 0)
-                offset += toWrite
-            }
-        }
-    }
-
-    private fun selectAudioTrack(extractor: MediaExtractor): Int {
-        for (i in 0 until extractor.trackCount) {
-            val format = extractor.getTrackFormat(i)
-            if (format.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) return i
-        }
-        return -1
-    }
-}
