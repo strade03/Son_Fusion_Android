@@ -1,13 +1,7 @@
 package com.podcastcreateur.app
 
 import android.content.Intent
-import android.media.AudioFormat
-import android.media.AudioManager
-import android.media.AudioTrack
-import android.media.MediaCodec
-import android.media.MediaExtractor
-import android.media.MediaFormat
-import java.nio.ByteOrder
+import android.media.MediaPlayer
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
@@ -17,25 +11,34 @@ import androidx.lifecycle.lifecycleScope
 import com.podcastcreateur.app.databinding.ActivityEditorBinding
 import kotlinx.coroutines.*
 import java.io.File
+import kotlin.math.abs
 
-/**
- * ÉDITEUR OPTIMISÉ - VERSION STREAMING PROGRESSIF
- * Affiche les premières secondes immédiatement
- * Charge le reste en arrière-plan
- */
+// Classe pour stocker les modifications en attente
+data class PendingEdit(
+    val type: EditType,
+    val startIndex: Int,
+    val endIndex: Int,
+    val timestamp: Long = System.currentTimeMillis()
+)
+
+enum class EditType {
+    CUT, NORMALIZE
+}
+
 class EditorActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityEditorBinding
     private lateinit var currentFile: File
     
     private var metadata: AudioMetadata? = null
-    
-    private var audioTrack: AudioTrack? = null
-    private var isPlaying = false
-    private var currentZoom = 1.0f
+    private var mediaPlayer: MediaPlayer? = null
     private var playbackJob: Job? = null
     
-    private var waveformLoadJob: Job? = null
+    private var currentZoom = 1.0f
+    
+    // 🔥 NOUVEAUTÉ : Liste des modifications en attente
+    private val pendingEdits = mutableListOf<PendingEdit>()
+    private var hasUnsavedChanges = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,105 +50,85 @@ class EditorActivity : AppCompatActivity() {
         currentFile = File(path)
         
         binding.txtFilename.text = currentFile.name.replace(Regex("^\\d{3}_"), "")
+        binding.waveformView.setZoomLevel(currentZoom)
         
-        loadWaveformOptimized()
+        loadWaveformStreaming()
+
+        binding.waveformView.onPositionChanged = { index -> updateCurrentTimeDisplay(index)}
 
         binding.btnPlay.setOnClickListener { 
-            if(!isPlaying) playAudio() else stopAudio() 
+            if(mediaPlayer?.isPlaying == true) stopAudio() else playAudio() 
         }
+        
         binding.btnCut.setOnClickListener { cutSelection() }
         binding.btnNormalize.setOnClickListener { normalizeSelection() }
+        
+        // 🔥 MODIFICATION : Sauvegarde différée
         binding.btnSave.setOnClickListener { 
-            Toast.makeText(this, "Modifications enregistrées", Toast.LENGTH_SHORT).show()
-            finish()
+            if (hasUnsavedChanges) {
+                saveAllChanges()
+            } else {
+                Toast.makeText(this, "Aucune modification à sauvegarder", Toast.LENGTH_SHORT).show()
+                finish()
+            }
         }
         
-        binding.btnZoomIn.setOnClickListener { 
-            applyZoom(currentZoom * 1.5f)
-        }
-        binding.btnZoomOut.setOnClickListener { 
-            applyZoom(currentZoom / 1.5f)
-        }
+        binding.btnZoomIn.setOnClickListener { applyZoom(currentZoom * 1.5f) }
+        binding.btnZoomOut.setOnClickListener { applyZoom(currentZoom / 1.5f) }
         
         binding.btnReRecord.setOnClickListener {
-            AlertDialog.Builder(this)
-                .setTitle("Refaire l'enregistrement ?")
-                .setMessage("L'audio actuel sera remplacé.")
-                .setPositiveButton("Oui") { _, _ ->
-                    stopAudio()
-                    val regex = Regex("^(\\d{3}_)(.*)\\.(.*)$")
-                    val match = regex.find(currentFile.name)
-                    if (match != null) {
-                        val (prefix, name, _) = match.destructured
-                        val projectPath = currentFile.parent
-                        val scriptPath = File(projectPath, "$prefix$name.txt").absolutePath
-                        val intent = Intent(this, RecorderActivity::class.java)
-                        intent.putExtra("PROJECT_PATH", projectPath)
-                        intent.putExtra("CHRONICLE_NAME", name)
-                        intent.putExtra("CHRONICLE_PREFIX", prefix)
-                        intent.putExtra("SCRIPT_PATH", scriptPath)
-                        startActivity(intent)
-                        finish()
+            if (hasUnsavedChanges) {
+                AlertDialog.Builder(this)
+                    .setTitle("Modifications non sauvegardées")
+                    .setMessage("Voulez-vous sauvegarder avant de refaire l'enregistrement ?")
+                    .setPositiveButton("Sauvegarder") { _, _ ->
+                        saveAllChanges(andThenReRecord = true)
                     }
-                }
-                .setNegativeButton("Annuler", null).show()
+                    .setNegativeButton("Ne pas sauvegarder") { _, _ ->
+                        launchReRecord()
+                    }
+                    .setNeutralButton("Annuler", null)
+                    .show()
+            } else {
+                launchReRecord()
+            }
         }
     }
 
-    /**
-     * ✅ CHARGEMENT OPTIMISÉ - STREAMING PROGRESSIF
-     */
-    private fun loadWaveformOptimized() {
+    private fun loadWaveformStreaming() {
         binding.progressBar.visibility = View.VISIBLE
+        
+        lifecycleScope.launch(Dispatchers.IO) {
+            metadata = AudioHelper.getAudioMetadata(currentFile)
+            val meta = metadata
+            
+            if (meta == null) {
+                withContext(Dispatchers.Main) { finish() }
+                return@launch
+            }
 
-        waveformLoadJob = lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                // 1. Charger les métadonnées (RAPIDE)
-                metadata = AudioHelper.getAudioMetadata(currentFile)
-                
-                if (metadata == null) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@EditorActivity, "Erreur lecture fichier", Toast.LENGTH_SHORT).show()
-                        finish()
-                    }
-                    return@launch
-                }
+            withContext(Dispatchers.Main) {
+                binding.txtDuration.text = formatTime(meta.duration)
+                val estimatedPoints = (meta.duration / 1000) * AudioHelper.POINTS_PER_SECOND
+                binding.waveformView.initialize(estimatedPoints)
+            }
 
-                val meta = metadata!!
-                
-                withContext(Dispatchers.Main) {
-                    // 2. Initialiser la vue avec les métadonnées
-                    binding.waveformView.setMetadata(
-                        meta.totalSamples.toInt(),
-                        meta.duration,
-                        meta.sampleRate
-                    )
-                    binding.txtDuration.text = formatTime(meta.duration)
-                    binding.progressBar.visibility = View.GONE
-                }
-                
-                // 3. Générer la waveform en streaming (PROGRESSIF)
-                AudioHelper.generateWaveformDataStreaming(currentFile) { chunk, totalProcessed, isComplete ->
-                    lifecycleScope.launch(Dispatchers.Main) {
-                        // Ajouter le chunk à la vue
-                        binding.waveformView.appendWaveformChunk(chunk)
-                        
-                        if (isComplete) {
-                            binding.waveformView.setComplete()
-                        }
+            AudioHelper.loadWaveformStream(currentFile) { newChunk ->
+                runOnUiThread {
+                    binding.waveformView.appendData(newChunk)
+                    if (binding.progressBar.visibility == View.VISIBLE) {
+                        binding.progressBar.visibility = View.GONE
                     }
-                }
-                
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                    Toast.makeText(this@EditorActivity, "Erreur: ${e.message}", Toast.LENGTH_SHORT).show()
                 }
             }
         }
     }
 
+    private fun updateCurrentTimeDisplay(index: Int) {
+        val ms = index.toLong() * (1000 / AudioHelper.POINTS_PER_SECOND)
+        binding.txtCurrentTime.text = formatTime(ms)
+    }
+    
     private fun formatTime(durationMs: Long): String {
         val sec = (durationMs / 1000).toInt()
         val m = sec / 60
@@ -154,376 +137,206 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun applyZoom(newZoom: Float) {
-        // ✅ CORRECTION : Permettre de dézoomer beaucoup plus (0.01 à 20)
-        val clampedZoom = newZoom.coerceIn(0.01f, 20.0f)
-        
-        val oldWidth = binding.waveformView.width
-        val playheadRelativePos = if (oldWidth > 0 && metadata != null) {
-            binding.waveformView.playheadPos.toFloat() / metadata!!.totalSamples
-        } else {
-            0.5f
-        }
-        
-        currentZoom = clampedZoom
+        val clamped = newZoom.coerceIn(0.1f, 50.0f)
+        currentZoom = clamped
+        val centerSample = binding.waveformView.getCenterSample(binding.scroller.scrollX, binding.scroller.width)
         binding.waveformView.setZoomLevel(currentZoom)
-        
         binding.waveformView.post {
-            val newWidth = binding.waveformView.width
-            val screenWidth = resources.displayMetrics.widthPixels
-            val playheadX = playheadRelativePos * newWidth
-            val targetScrollX = (playheadX - screenWidth / 2).toInt().coerceAtLeast(0)
-            binding.scroller.smoothScrollTo(targetScrollX, 0)
+            val newScrollX = binding.waveformView.sampleToPixel(centerSample) - (binding.scroller.width / 2)
+            binding.scroller.scrollTo(newScrollX.toInt().coerceAtLeast(0), 0)
         }
     }
 
-    /**
-     * ✅ LECTURE AUDIO CORRIGÉE - Buffer size approprié
-     */
     private fun playAudio() {
         val meta = metadata ?: return
-        if (isPlaying) return
+        stopAudio()
         
-        isPlaying = true
-        binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
-
-        playbackJob = lifecycleScope.launch(Dispatchers.IO) {
-            var extractor: MediaExtractor? = null
-            var decoder: MediaCodec? = null
+        try {
+            mediaPlayer = MediaPlayer().apply {
+                setDataSource(currentFile.absolutePath)
+                prepare()
+                
+                val startIndex = if(binding.waveformView.selectionStart >= 0) 
+                                    binding.waveformView.selectionStart 
+                                  else 
+                                    binding.waveformView.playheadPos
+                
+                val startMs = startIndex * (1000 / AudioHelper.POINTS_PER_SECOND)
+                
+                seekTo(startMs)
+                start()
+                
+                setOnCompletionListener { stopAudio() }
+            }
             
-            try {
-                extractor = MediaExtractor()
-                extractor.setDataSource(currentFile.absolutePath)
-                
-                var trackIndex = -1
-                var format: MediaFormat? = null
-                
-                for (i in 0 until extractor.trackCount) {
-                    val f = extractor.getTrackFormat(i)
-                    val mime = f.getString(MediaFormat.KEY_MIME)
-                    if (mime?.startsWith("audio/") == true) {
-                        trackIndex = i
-                        format = f
+            binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
+            
+            playbackJob = lifecycleScope.launch {
+                val endIndex = if(binding.waveformView.selectionEnd > binding.waveformView.selectionStart && binding.waveformView.selectionStart >= 0) 
+                                    binding.waveformView.selectionEnd 
+                                else 
+                                    Int.MAX_VALUE
+                                    
+                while (mediaPlayer?.isPlaying == true) {
+                    val currentMs = mediaPlayer?.currentPosition?.toLong() ?: 0L
+                    val currentIndex = ((currentMs * AudioHelper.POINTS_PER_SECOND) / 1000).toInt()
+                    
+                    binding.waveformView.playheadPos = currentIndex
+                    binding.waveformView.invalidate()
+                    runOnUiThread { updateCurrentTimeDisplay(currentIndex) }
+                    autoScroll(currentIndex)
+                    
+                    if (binding.waveformView.selectionStart >= 0 && currentIndex >= endIndex) {
+                        mediaPlayer?.pause()
                         break
                     }
+                    delay(25) 
                 }
-                
-                if (trackIndex < 0 || format == null) {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@EditorActivity, "Format audio non supporté", Toast.LENGTH_SHORT).show()
-                    }
-                    return@launch
-                }
-                
-                var startSample = if (binding.waveformView.selectionStart >= 0) {
-                    binding.waveformView.selectionStart
-                } else {
-                    binding.waveformView.playheadPos
-                }
-                
-                val endSample = if (binding.waveformView.selectionEnd > startSample) {
-                    binding.waveformView.selectionEnd
-                } else {
-                    meta.totalSamples.toInt()
-                }
-                
-                val startMs = (startSample * 1000L) / meta.sampleRate
-                extractor.selectTrack(trackIndex)
-                extractor.seekTo(startMs * 1000, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
-                
-                val mime = format.getString(MediaFormat.KEY_MIME) ?: return@launch
-                decoder = MediaCodec.createDecoderByType(mime)
-                decoder.configure(format, null, null, 0)
-                decoder.start()
-                
-                // ✅ CORRECTION : Buffer size beaucoup plus grand pour éviter le ralentissement
-                val minBuf = AudioTrack.getMinBufferSize(
-                    meta.sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                )
-                
-                // Utiliser 4x le buffer minimum pour éviter les underruns
-                val bufferSize = minBuf * 4
-                
-                audioTrack = AudioTrack(
-                    AudioManager.STREAM_MUSIC,
-                    meta.sampleRate,
-                    AudioFormat.CHANNEL_OUT_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    bufferSize,
-                    AudioTrack.MODE_STREAM
-                )
-                
-                audioTrack?.play()
-                
-                val bufferInfo = MediaCodec.BufferInfo()
-                var currentSample = startSample
-                val updateInterval = meta.sampleRate / 20
-                var samplesSinceUpdate = 0
-                var isInputDone = false
-                
-                while (isPlaying && currentSample < endSample) {
-                    if (!isInputDone) {
-                        val inIndex = decoder.dequeueInputBuffer(10000)
-                        if (inIndex >= 0) {
-                            val inBuffer = decoder.getInputBuffer(inIndex)
-                            if (inBuffer != null) {
-                                val sampleSize = extractor.readSampleData(inBuffer, 0)
-                                val sampleTime = extractor.sampleTime / 1000
-                                val endMs = (endSample * 1000L) / meta.sampleRate
-                                
-                                if (sampleSize < 0 || sampleTime >= endMs) {
-                                    decoder.queueInputBuffer(
-                                        inIndex, 0, 0, 0,
-                                        MediaCodec.BUFFER_FLAG_END_OF_STREAM
-                                    )
-                                    isInputDone = true
-                                } else {
-                                    decoder.queueInputBuffer(
-                                        inIndex, 0, sampleSize,
-                                        extractor.sampleTime, 0
-                                    )
-                                    extractor.advance()
-                                }
-                            }
-                        }
-                    }
-                    
-                    val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000)
-                    if (outIndex >= 0) {
-                        val outBuffer = decoder.getOutputBuffer(outIndex)
-                        if (outBuffer != null && bufferInfo.size > 0) {
-                            val tempArray = ShortArray(bufferInfo.size / 2)
-                            outBuffer.order(ByteOrder.LITTLE_ENDIAN)
-                            outBuffer.asShortBuffer().get(tempArray)
-                            
-                            // ✅ CORRECTION : Write bloquant pour éviter le ralentissement
-                            audioTrack?.write(tempArray, 0, tempArray.size, AudioTrack.WRITE_BLOCKING)
-                            
-                            currentSample += tempArray.size
-                            samplesSinceUpdate += tempArray.size
-                            
-                            if (samplesSinceUpdate >= updateInterval) {
-                                samplesSinceUpdate = 0
-                                withContext(Dispatchers.Main) {
-                                    binding.waveformView.playheadPos = currentSample.coerceIn(0, meta.totalSamples.toInt())
-                                    binding.waveformView.invalidate()
-                                    autoScroll(currentSample)
-                                }
-                            }
-                        }
-                        
-                        decoder.releaseOutputBuffer(outIndex, false)
-                        
-                        if (bufferInfo.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
-                            break
-                        }
-                    } else if (outIndex == MediaCodec.INFO_TRY_AGAIN_LATER) {
-                        if (isInputDone) break
-                    }
-                }
-                
-                withContext(Dispatchers.Main) {
-                    binding.waveformView.playheadPos = currentSample
-                    binding.waveformView.invalidate()
-                }
-                
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@EditorActivity, "Erreur lecture: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            } finally {
-                try {
-                    audioTrack?.stop()
-                    audioTrack?.release()
-                    audioTrack = null
-                    decoder?.stop()
-                    decoder?.release()
-                    extractor?.release()
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-                
-                isPlaying = false
-                withContext(Dispatchers.Main) {
-                    binding.btnPlay.setImageResource(R.drawable.ic_play)
-                    binding.waveformView.invalidate()
-                }
+                if (mediaPlayer?.isPlaying != true) stopAudio()
             }
+            
+        } catch (e: Exception) {
+            e.printStackTrace()
+            Toast.makeText(this, "Erreur lecture", Toast.LENGTH_SHORT).show()
         }
     }
 
     private fun autoScroll(sampleIdx: Int) {
-        val meta = metadata ?: return
-        val viewWidth = binding.waveformView.width
-        val screenW = resources.displayMetrics.widthPixels
-        val x = (sampleIdx.toFloat() / meta.totalSamples) * viewWidth
-        val scrollX = (x - screenW / 2).toInt()
-        binding.scroller.smoothScrollTo(scrollX.coerceAtLeast(0), 0)
+        val px = binding.waveformView.sampleToPixel(sampleIdx)
+        val screenCenter = binding.scroller.width / 2
+        val target = (px - screenCenter).toInt().coerceAtLeast(0)
+        if (abs(binding.scroller.scrollX - target) > 10) {
+            binding.scroller.scrollTo(target, 0)
+        }
     }
 
     private fun stopAudio() {
-        isPlaying = false
         playbackJob?.cancel()
-        audioTrack?.stop()
-        audioTrack?.release()
-        audioTrack = null
-        
+        try {
+            if (mediaPlayer?.isPlaying == true) mediaPlayer?.stop()
+            mediaPlayer?.release()
+        } catch (e: Exception) {}
+        mediaPlayer = null
         binding.btnPlay.setImageResource(R.drawable.ic_play)
-        binding.waveformView.invalidate()
     }
-    
-    /**
-     * ✅ COUPE OPTIMISÉE - Utilise trimAudio (streaming) au lieu de decodeToPCM (RAM)
-     */
+
+    // 🔥 MODIFICATION : Coupe instantanée (visuelle uniquement)
     private fun cutSelection() {
         val meta = metadata ?: return
-        val start = binding.waveformView.selectionStart
-        val end = binding.waveformView.selectionEnd
-        
-        if (start < 0 || end <= start) {
+        val startIdx = binding.waveformView.selectionStart
+        val endIdx = binding.waveformView.selectionEnd
+        if (startIdx < 0 || endIdx <= startIdx) {
             Toast.makeText(this, "Sélectionnez une zone à couper", Toast.LENGTH_SHORT).show()
             return
         }
-
-        AlertDialog.Builder(this)
-            .setTitle("Couper la sélection ?")
-            .setMessage("La partie sélectionnée sera supprimée")
-            .setPositiveButton("Oui") { _, _ ->
-                performCutOptimized(start, end, meta)
-            }
-            .setNegativeButton("Non", null)
-            .show()
-    }
-    
-    /**
-     * ✅ NOUVELLE VERSION - Coupe en 2 parties sans charger tout en RAM
-     */
-    private fun performCutOptimized(startSample: Int, endSample: Int, meta: AudioMetadata) {
-        binding.progressBar.visibility = View.VISIBLE
         
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val startMs = (startSample * 1000L) / meta.sampleRate
-                val endMs = (endSample * 1000L) / meta.sampleRate
-                val totalDurationMs = meta.duration
-                
-                // Partie 1 : Avant la coupe (0 -> startMs)
-                val part1 = File(currentFile.parent, "temp_part1_${System.currentTimeMillis()}.m4a")
-                val success1 = if (startMs > 0) {
-                    AudioHelper.trimAudio(currentFile, part1, 0, startMs, meta.sampleRate)
-                } else {
-                    false
-                }
-                
-                // Partie 2 : Après la coupe (endMs -> fin)
-                val part2 = File(currentFile.parent, "temp_part2_${System.currentTimeMillis()}.m4a")
-                val success2 = if (endMs < totalDurationMs) {
-                    AudioHelper.trimAudio(currentFile, part2, endMs, totalDurationMs, meta.sampleRate)
-                } else {
-                    false
-                }
-                
-                // Fusionner les 2 parties
-                val tempFinal = File(currentFile.parent, "temp_final_${System.currentTimeMillis()}.m4a")
-                val filesToMerge = mutableListOf<File>()
-                if (success1 && part1.exists()) filesToMerge.add(part1)
-                if (success2 && part2.exists()) filesToMerge.add(part2)
-                
-                val success = if (filesToMerge.isNotEmpty()) {
-                    AudioHelper.mergeFiles(filesToMerge, tempFinal)
-                } else {
-                    false
-                }
-                
-                // Nettoyer les fichiers temporaires
-                part1.delete()
-                part2.delete()
-                
-                if (success && tempFinal.exists()) {
-                    currentFile.delete()
-                    tempFinal.renameTo(currentFile)
-                    
-                    withContext(Dispatchers.Main) {
-                        binding.waveformView.clearSelection()
-                        binding.waveformView.playheadPos = 0
-                        loadWaveformOptimized()
-                        Toast.makeText(this@EditorActivity, "Coupé !", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        Toast.makeText(this@EditorActivity, "Erreur coupe", Toast.LENGTH_SHORT).show()
-                    }
-                }
-                
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    Toast.makeText(this@EditorActivity, "Erreur: ${e.message}", Toast.LENGTH_SHORT).show()
-                }
-            } finally {
-                withContext(Dispatchers.Main) {
-                    binding.progressBar.visibility = View.GONE
-                }
-            }
-        }
+        stopAudio()
+        
+        // Ajouter à la liste des modifications en attente
+        pendingEdits.add(PendingEdit(EditType.CUT, startIdx, endIdx))
+        hasUnsavedChanges = true
+        
+        // Mise à jour visuelle instantanée de la waveform
+        binding.waveformView.applyCutVisually(startIdx, endIdx)
+        
+        // Réinitialiser la sélection
+        binding.waveformView.clearSelection()
+        
+        Toast.makeText(this, "✂️ Coupe marquée (appuyez sur Sauvegarder pour appliquer)", Toast.LENGTH_SHORT).show()
+        
+        // Mettre à jour le titre pour indiquer les modifications
+        binding.txtFilename.text = "* " + currentFile.name.replace(Regex("^\\d{3}_"), "")
     }
 
+    // 🔥 MODIFICATION : Normalisation instantanée (marquée uniquement)
     private fun normalizeSelection() {
         val meta = metadata ?: return
-        val start = if (binding.waveformView.selectionStart >= 0) {
-            binding.waveformView.selectionStart
-        } else {
-            0
-        }
-        val end = if (binding.waveformView.selectionEnd > start) {
-            binding.waveformView.selectionEnd
-        } else {
-            meta.totalSamples.toInt()
+        stopAudio()
+        
+        val startIdx = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else 0
+        val endIdx = if(binding.waveformView.selectionEnd > startIdx) binding.waveformView.selectionEnd else Int.MAX_VALUE
+        
+        pendingEdits.add(PendingEdit(EditType.NORMALIZE, startIdx, endIdx))
+        hasUnsavedChanges = true
+        
+        Toast.makeText(this, "🔊 Normalisation marquée (appuyez sur Sauvegarder pour appliquer)", Toast.LENGTH_SHORT).show()
+        binding.txtFilename.text = "* " + currentFile.name.replace(Regex("^\\d{3}_"), "")
+    }
+    
+    // 🔥 NOUVEAUTÉ : Sauvegarde de toutes les modifications
+    private fun saveAllChanges(andThenReRecord: Boolean = false) {
+        if (pendingEdits.isEmpty()) {
+            Toast.makeText(this, "Aucune modification à sauvegarder", Toast.LENGTH_SHORT).show()
+            if (andThenReRecord) launchReRecord()
+            else finish()
+            return
         }
         
         val progressDialog = AlertDialog.Builder(this)
-            .setTitle("Normalisation en cours...")
-            .setMessage("Passe 1/2: Analyse...")
+            .setTitle("Traitement en cours...")
+            .setMessage("Application des modifications (${pendingEdits.size} opération(s))")
             .setCancelable(false)
             .create()
         progressDialog.show()
         
+        binding.progressBar.visibility = View.VISIBLE
+        
         lifecycleScope.launch(Dispatchers.IO) {
+            val meta = metadata ?: return@launch
+            
             try {
-                val startMs = (start * 1000L) / meta.sampleRate
-                val endMs = (end * 1000L) / meta.sampleRate
+                // Appliquer toutes les modifications dans l'ordre
+                var currentWorkingFile = currentFile
                 
-                val tempFile = File(currentFile.parent, "temp_norm_${System.currentTimeMillis()}.m4a")
-                
-                val success = AudioHelper.normalizeAudio(
-                    currentFile,
-                    tempFile,
-                    startMs,
-                    endMs,
-                    meta.sampleRate,
-                    0.95f
-                ) { progress ->
-                    lifecycleScope.launch(Dispatchers.Main) {
-                        val passText = if (progress < 0.5f) "Passe 1/2: Analyse" else "Passe 2/2: Application"
-                        progressDialog.setMessage(passText)
+                pendingEdits.forEachIndexed { index, edit ->
+                    withContext(Dispatchers.Main) {
+                        progressDialog.setMessage("Traitement ${index + 1}/${pendingEdits.size}...")
+                    }
+                    
+                    val tmpFile = File(currentFile.parent, "tmp_edit_${System.currentTimeMillis()}.m4a")
+                    
+                    val success = when (edit.type) {
+                        EditType.CUT -> {
+                            val samplesPerPoint = meta.sampleRate / AudioHelper.POINTS_PER_SECOND
+                            val startSample = edit.startIndex * samplesPerPoint
+                            val endSample = edit.endIndex * samplesPerPoint
+                            AudioHelper.deleteRegionStreaming(currentWorkingFile, tmpFile, startSample, endSample)
+                        }
+                        EditType.NORMALIZE -> {
+                            val startMs = (edit.startIndex * 1000L) / AudioHelper.POINTS_PER_SECOND
+                            val endMs = if(edit.endIndex == Int.MAX_VALUE) meta.duration 
+                                       else (edit.endIndex * 1000L) / AudioHelper.POINTS_PER_SECOND
+                            AudioHelper.normalizeAudio(currentWorkingFile, tmpFile, startMs, endMs, meta.sampleRate, 0.95f) {}
+                        }
+                    }
+                    
+                    if (success) {
+                        if (currentWorkingFile != currentFile) {
+                            currentWorkingFile.delete()
+                        }
+                        currentWorkingFile = tmpFile
+                    } else {
+                        tmpFile.delete()
+                        throw Exception("Échec de l'opération ${edit.type}")
                     }
                 }
                 
-                if (success) {
-                    currentFile.delete()
-                    tempFile.renameTo(currentFile)
+                // Remplacer le fichier original
+                currentFile.delete()
+                currentWorkingFile.renameTo(currentFile)
+                
+                withContext(Dispatchers.Main) {
+                    progressDialog.dismiss()
+                    binding.progressBar.visibility = View.GONE
+                    pendingEdits.clear()
+                    hasUnsavedChanges = false
                     
-                    withContext(Dispatchers.Main) {
-                        progressDialog.dismiss()
-                        loadWaveformOptimized()
-                        Toast.makeText(this@EditorActivity, "Normalisé !", Toast.LENGTH_SHORT).show()
-                    }
-                } else {
-                    withContext(Dispatchers.Main) {
-                        progressDialog.dismiss()
-                        Toast.makeText(this@EditorActivity, "Erreur normalisation", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@EditorActivity, "✅ Modifications sauvegardées", Toast.LENGTH_SHORT).show()
+                    
+                    if (andThenReRecord) {
+                        launchReRecord()
+                    } else {
+                        finish()
                     }
                 }
                 
@@ -531,15 +344,47 @@ class EditorActivity : AppCompatActivity() {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
                     progressDialog.dismiss()
-                    Toast.makeText(this@EditorActivity, "Erreur: ${e.message}", Toast.LENGTH_SHORT).show()
+                    binding.progressBar.visibility = View.GONE
+                    Toast.makeText(this@EditorActivity, "❌ Erreur : ${e.message}", Toast.LENGTH_LONG).show()
                 }
             }
         }
     }
     
-    override fun onStop() {
+    private fun launchReRecord() {
+        val regex = Regex("^(\\d{3}_)(.*)\\.(.*)$")
+        val match = regex.find(currentFile.name)
+        if (match != null) {
+            val (prefix, name, _) = match.destructured
+            val intent = Intent(this, RecorderActivity::class.java)
+            intent.putExtra("PROJECT_PATH", currentFile.parent)
+            intent.putExtra("CHRONICLE_NAME", name)
+            intent.putExtra("CHRONICLE_PREFIX", prefix)
+            startActivity(intent)
+            finish()
+        }
+    }
+    
+    override fun onStop() { 
         super.onStop()
         stopAudio()
-        waveformLoadJob?.cancel()
+    }
+    
+    override fun onBackPressed() {
+        if (hasUnsavedChanges) {
+            AlertDialog.Builder(this)
+                .setTitle("Modifications non sauvegardées")
+                .setMessage("Voulez-vous sauvegarder vos modifications ?")
+                .setPositiveButton("Sauvegarder") { _, _ ->
+                    saveAllChanges()
+                }
+                .setNegativeButton("Ne pas sauvegarder") { _, _ ->
+                    super.onBackPressed()
+                }
+                .setNeutralButton("Annuler", null)
+                .show()
+        } else {
+            super.onBackPressed()
+        }
     }
 }
