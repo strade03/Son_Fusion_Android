@@ -331,3 +331,59 @@ class EditorActivity : AppCompatActivity() {
                         if (currentRealMs >= cut.first && currentRealMs < cut.second) {
                             // On saute à la fin de la coupe
                             mediaPlayer?.seekTo(cut.second.toInt())
+                            inCut = true
+                            break
+                        }
+                    }
+                    
+                    if (!inCut) {
+                        // 2. LOGIQUE D'AFFICHAGE CURSEUR
+                        // Convertir Real Time -> Visual Time (l'inverse de tout à l'heure)
+                        var visualMs = currentRealMs
+                        for (cut in sortedCuts) {
+                            if (currentRealMs > cut.second) {
+                                visualMs -= (cut.second - cut.first)
+                            }
+                        }
+                        
+                        val msPerPoint = 1000.0 / currentPointsPerSecond
+                        val currentIdx = (visualMs / msPerPoint).toInt()
+                        
+                        binding.waveformView.playheadPos = currentIdx
+                        binding.waveformView.invalidate()
+                        runOnUiThread { updateCurrentTimeDisplay(currentIdx) }
+                        autoScroll(currentIdx)
+                        
+                        // Stop selection
+                        // Note : La sélection de fin est visuelle, donc on compare avec l'index visuel
+                        if (binding.waveformView.selectionEnd > 0 && currentIdx >= binding.waveformView.selectionEnd) {
+                            mediaPlayer?.pause()
+                            break
+                        }
+                    }
+                    
+                    delay(40)
+                }
+                if (mediaPlayer?.isPlaying != true) stopAudio()
+            }
+        } catch (e: Exception) { e.printStackTrace() }
+    }
+
+    private fun autoScroll(sampleIdx: Int) {
+        val px = binding.waveformView.sampleToPixel(sampleIdx)
+        val screenCenter = binding.scroller.width / 2
+        val target = (px - screenCenter).toInt().coerceAtLeast(0)
+        if (abs(binding.scroller.scrollX - target) > 50) {
+            binding.scroller.smoothScrollTo(target, 0)
+        }
+    }
+
+    private fun stopAudio() {
+        playbackJob?.cancel()
+        mediaPlayer?.release()
+        mediaPlayer = null
+        binding.btnPlay.setImageResource(R.drawable.ic_play)
+    }
+
+    override fun onStop() { super.onStop(); stopAudio() }
+}
