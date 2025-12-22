@@ -95,7 +95,7 @@ object AudioHelper {
             var samplesPerPoint = currentSampleRate / POINTS_PER_SECOND
             
             // OPTIMISATION : Si le fichier est long (> 5 min), on ne lit qu'un échantillon sur 8
-            val step = if (accurateDuration > 300_000) 8 else 1 
+            val step = 18 // if (accurateDuration > 300_000) 8 else 1 
 
             while (true) {
                 if (!isEOS) {
