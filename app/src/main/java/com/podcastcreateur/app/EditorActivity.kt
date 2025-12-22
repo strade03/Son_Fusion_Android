@@ -1,7 +1,7 @@
 package com.podcastcreateur.app
 
 import android.content.Intent
-import android.media.MediaPlayer
+import android.media.* // Importe AudioTrack, AudioFormat, AudioAttributes, etc.
 import android.os.Bundle
 import android.view.View
 import android.widget.Toast
@@ -19,7 +19,6 @@ class EditorActivity : AppCompatActivity() {
     private lateinit var currentFile: File
     
     private var metadata: AudioMetadata? = null
-    private var mediaPlayer: MediaPlayer? = null
     private var playbackJob: Job? = null
     
     private var currentZoom = 1.0f 
@@ -47,7 +46,8 @@ class EditorActivity : AppCompatActivity() {
         binding.waveformView.onPositionChanged = { index -> updateCurrentTimeDisplay(index)}
 
         binding.btnPlay.setOnClickListener { 
-            if(mediaPlayer?.isPlaying == true) stopAudio() else playAudio() 
+            // Correction : on vérifie l'état isPlaying de notre nouveau lecteur
+            if(isPlaying) stopAudio() else playAudio() 
         }
         
         binding.btnCut.setOnClickListener { cutSelection() }
@@ -90,7 +90,7 @@ class EditorActivity : AppCompatActivity() {
     private fun loadEditorData() {
         binding.progressBar.visibility = View.VISIBLE
         
-        // TÂCHE 1 : Affichage immédiat de l'onde (Streaming)
+        // TÂCHE 1 : Affichage immédiat de l'onde (Streaming via fichier)
         lifecycleScope.launch(Dispatchers.IO) {
             metadata = AudioHelper.getAudioMetadata(currentFile)
             val meta = metadata ?: return@launch
@@ -111,7 +111,7 @@ class EditorActivity : AppCompatActivity() {
             }
         }
 
-        // TÂCHE 2 : Chargement silencieux du PCM pour l'édition mémoire
+        // TÂCHE 2 : Chargement silencieux du PCM en mémoire pour édition/lecture temps réel
         lifecycleScope.launch(Dispatchers.IO) {
             val content = AudioHelper.decodeToPCM(currentFile)
             workingPcm = content.data
@@ -120,7 +120,6 @@ class EditorActivity : AppCompatActivity() {
             
             withContext(Dispatchers.Main) {
                 updateEditButtons(true)
-                // Optionnel : Toast.makeText(this@EditorActivity, "Édition prête", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -152,7 +151,7 @@ class EditorActivity : AppCompatActivity() {
         val pcm = workingPcm ?: return
         if (isPlaying) { stopAudio(); return }
 
-        // 1. Calculer la position de départ dans le tableau PCM
+        // 1. Calculer la position de départ (index -> samples)
         val samplesPerPoint = (sampleRate * currentChannels) / AudioHelper.POINTS_PER_SECOND
         val startIndex = if (binding.waveformView.selectionStart >= 0) 
                             binding.waveformView.selectionStart 
@@ -165,56 +164,59 @@ class EditorActivity : AppCompatActivity() {
                             else 
                                 pcm.size
 
-        // 2. Configurer AudioTrack (Mono ou Stéréo)
+        // 2. Configuration AudioTrack
         val channelConfig = if (currentChannels == 1) AudioFormat.CHANNEL_OUT_MONO else AudioFormat.CHANNEL_OUT_STEREO
         val bufferSize = AudioTrack.getMinBufferSize(sampleRate, channelConfig, AudioFormat.ENCODING_PCM_16BIT)
 
-        audioTrack = AudioTrack.Builder()
-            .setAudioAttributes(AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_MEDIA)
-                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                .build())
-            .setAudioFormat(AudioFormat.Builder()
-                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                .setSampleRate(sampleRate)
-                .setChannelMask(channelConfig)
-                .build())
-            .setBufferSizeInBytes(bufferSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .build()
+        try {
+            audioTrack = AudioTrack.Builder()
+                .setAudioAttributes(AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build())
+                .setAudioFormat(AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(sampleRate)
+                    .setChannelMask(channelConfig)
+                    .build())
+                .setBufferSizeInBytes(bufferSize)
+                .setTransferMode(AudioTrack.MODE_STREAM)
+                .build()
 
-        isPlaying = true
-        binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
+            isPlaying = true
+            binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
 
-        // 3. Lancer la lecture dans un thread séparé (Coroutine)
-        playbackJob = lifecycleScope.launch(Dispatchers.IO) {
-            audioTrack?.play()
-            
-            val tempBuffer = ShortArray(bufferSize / 2)
-            
-            while (isPlaying && currentSampleOffset < endSampleLimit) {
-                val remaining = endSampleLimit - currentSampleOffset
-                val toWrite = minOf(tempBuffer.size, remaining)
+            // 3. Boucle de lecture via Coroutine
+            playbackJob = lifecycleScope.launch(Dispatchers.IO) {
+                audioTrack?.play()
                 
-                // Copier une partie du PCM vers le buffer temporaire
-                System.arraycopy(pcm, currentSampleOffset, tempBuffer, 0, toWrite)
+                val tempBuffer = ShortArray(bufferSize / 2)
                 
-                // Envoyer au haut-parleur
-                val written = audioTrack?.write(tempBuffer, 0, toWrite) ?: 0
-                if (written <= 0) break
-                
-                currentSampleOffset += written
-                
-                // Mettre à jour l'UI (Playhead)
-                val currentIndex = currentSampleOffset / samplesPerPoint
-                withContext(Dispatchers.Main) {
-                    binding.waveformView.playheadPos = currentIndex
-                    binding.waveformView.invalidate()
-                    updateCurrentTimeDisplay(currentIndex)
-                    autoScroll(currentIndex)
+                while (isPlaying && currentSampleOffset < endSampleLimit) {
+                    val remaining = endSampleLimit - currentSampleOffset
+                    val toWrite = minOf(tempBuffer.size, remaining)
+                    
+                    if (toWrite <= 0) break
+                    
+                    System.arraycopy(pcm, currentSampleOffset, tempBuffer, 0, toWrite)
+                    val written = audioTrack?.write(tempBuffer, 0, toWrite) ?: 0
+                    if (written <= 0) break
+                    
+                    currentSampleOffset += written
+                    
+                    // Update UI
+                    val currentIndex = currentSampleOffset / samplesPerPoint
+                    withContext(Dispatchers.Main) {
+                        binding.waveformView.playheadPos = currentIndex
+                        binding.waveformView.invalidate()
+                        updateCurrentTimeDisplay(currentIndex)
+                        autoScroll(currentIndex)
+                    }
                 }
+                withContext(Dispatchers.Main) { stopAudio() }
             }
-            withContext(Dispatchers.Main) { stopAudio() }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Erreur initialisation AudioTrack", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -315,7 +317,6 @@ class EditorActivity : AppCompatActivity() {
 
         lifecycleScope.launch(Dispatchers.IO) {
             val tmp = File(currentFile.parent, "tmp_save.m4a")
-            // Correction de l'appel : on passe currentChannels
             val success = AudioHelper.savePCMToAAC(pcm, tmp, sampleRate, currentChannels)
             
             withContext(Dispatchers.Main) {
