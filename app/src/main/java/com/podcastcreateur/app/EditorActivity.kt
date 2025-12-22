@@ -4,6 +4,7 @@ import android.content.Intent
 import android.media.MediaPlayer
 import android.os.Bundle
 import android.view.View
+import android.view.WindowManager // IMPORT AJOUTÉ
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -33,10 +34,17 @@ class EditorActivity : AppCompatActivity() {
 
     private val pendingCuts = ArrayList<Pair<Long, Long>>() 
     
+    // NOUVEAU : Gain virtuel (1.0 = pas de changement)
+    private var pendingGain = 1.0f
+    
     private var msPerPoint: Double = 20.0 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // --- 1. GARDER ECRAN ALLUMÉ ---
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        
         binding = ActivityEditorBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
@@ -57,7 +65,7 @@ class EditorActivity : AppCompatActivity() {
         }
         
         binding.btnCut.setOnClickListener { performVirtualCut() }
-        binding.btnNormalize.setOnClickListener { normalizeSelectionStreaming() }
+        binding.btnNormalize.setOnClickListener { prepareVirtualNormalization() } // Changement ici
         binding.btnSave.setOnClickListener { saveChangesAndExit() }
         
         binding.btnZoomIn.setOnClickListener { applyZoom(currentZoom * 1.5f) }
@@ -132,8 +140,10 @@ class EditorActivity : AppCompatActivity() {
             }, { error ->
                 error.printStackTrace()
                 runOnUiThread { 
-                    Toast.makeText(this@EditorActivity, "Erreur chargement", Toast.LENGTH_SHORT).show()
                     binding.progressBar.visibility = View.GONE
+                    if (binding.waveformView.getPointsCount() == 0) {
+                        Toast.makeText(this@EditorActivity, "Erreur lecture fichier", Toast.LENGTH_SHORT).show()
+                    }
                 }
             })
         }
@@ -161,8 +171,6 @@ class EditorActivity : AppCompatActivity() {
         val displayDuration = totalDurationMs - totalCutMs
         
         binding.txtDuration.text = formatTime(displayDuration)
-        
-        Toast.makeText(this, "Coupe (en attente de sauvegarde)", Toast.LENGTH_SHORT).show()
     }
     
     private fun mapVisualToRealTime(visualMs: Long): Long {
@@ -176,8 +184,33 @@ class EditorActivity : AppCompatActivity() {
         return realMs
     }
 
+    // --- 2. OPTIMISATION NORMALISATION (VIRTUELLE) ---
+    // On ne réécrit pas le fichier. On calcule juste le gain nécessaire.
+    // L'application réelle se fera dans saveChangesAndExit.
+    private fun prepareVirtualNormalization() {
+        stopAudio()
+        binding.progressBar.visibility = View.VISIBLE
+        
+        lifecycleScope.launch(Dispatchers.IO) {
+            val peak = AudioHelper.calculatePeak(currentFile)
+            
+            withContext(Dispatchers.Main) {
+                binding.progressBar.visibility = View.GONE
+                if (peak > 0.01f) {
+                    val target = 0.98f // Cible standard
+                    pendingGain = target / peak
+                    Toast.makeText(this@EditorActivity, "Normalisation prête (sera appliquée à la sauvegarde)", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this@EditorActivity, "Audio trop faible ou vide", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
     private fun saveChangesAndExit() {
-        if (pendingCuts.isEmpty()) { finish(); return }
+        // Même si pas de coupes, on sauvegarde si y'a un gain à appliquer
+        if (pendingCuts.isEmpty() && pendingGain == 1.0f) { finish(); return }
+        
         stopAudio()
         binding.progressBar.visibility = View.VISIBLE
         
@@ -186,7 +219,6 @@ class EditorActivity : AppCompatActivity() {
             val samplesCuts = ArrayList<Pair<Long, Long>>()
             val meta = AudioHelper.getAudioMetadata(currentFile) ?: return@launch
             
-            // CORRECTION STÉRÉO ICI : Multiplier par le nombre de canaux
             val samplesPerMs = (meta.sampleRate * meta.channelCount) / 1000.0
             
             for (cut in pendingCuts) {
@@ -195,7 +227,9 @@ class EditorActivity : AppCompatActivity() {
                 samplesCuts.add(Pair(sStart, sEnd))
             }
             
-            val success = AudioHelper.saveWithCuts(currentFile, tmpFile, samplesCuts)
+            // On appelle la nouvelle fonction qui fait TOUT en une seule passe
+            val success = AudioHelper.saveWithCutsAndGain(currentFile, tmpFile, samplesCuts, pendingGain)
+            
             withContext(Dispatchers.Main) {
                 if (success) {
                     currentFile.delete()
@@ -204,27 +238,6 @@ class EditorActivity : AppCompatActivity() {
                     finish()
                 } else {
                     Toast.makeText(this@EditorActivity, "Erreur sauvegarde", Toast.LENGTH_SHORT).show()
-                    binding.progressBar.visibility = View.GONE
-                }
-            }
-        }
-    }
-
-    private fun normalizeSelectionStreaming() {
-        stopAudio()
-        binding.progressBar.visibility = View.VISIBLE
-        lifecycleScope.launch(Dispatchers.IO) {
-            val tmpFile = File(currentFile.parent, "tmp_norm.m4a")
-            val success = AudioHelper.normalizeAudio(currentFile, tmpFile, 0, totalDurationMs, sampleRate, 0.98f) {}
-            withContext(Dispatchers.Main) {
-                if(success) {
-                    currentFile.delete()
-                    tmpFile.renameTo(currentFile)
-                    pendingCuts.clear() 
-                    binding.waveformView.clearData()
-                    loadWaveformFast() 
-                    Toast.makeText(this@EditorActivity, "Normalisé", Toast.LENGTH_SHORT).show()
-                } else {
                     binding.progressBar.visibility = View.GONE
                 }
             }
@@ -254,6 +267,16 @@ class EditorActivity : AppCompatActivity() {
         try {
             mediaPlayer = MediaPlayer().apply {
                 setDataSource(currentFile.absolutePath)
+                
+                // Appliquer le volume (gain) en prévisualisation si possible
+                // MediaPlayer ne peut pas amplifier au-dessus de 1.0 facilement sans API level élevé ou DynamicsProcessing
+                // On met juste au max si gain > 1, sinon on réduit.
+                // C'est juste une prévisualisation approximative du volume.
+                if (pendingGain != 1.0f) {
+                    val vol = pendingGain.coerceAtMost(1.0f)
+                    setVolume(vol, vol)
+                }
+                
                 prepare()
                 
                 val startIdx = if(binding.waveformView.selectionStart >= 0) binding.waveformView.selectionStart else binding.waveformView.playheadPos

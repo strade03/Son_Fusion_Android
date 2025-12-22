@@ -16,7 +16,6 @@ data class AudioMetadata(
 object AudioHelper {
     private const val BIT_RATE = 128000
     
-    // Récupération précise des métadonnées (Support Stéréo)
     fun getAudioMetadata(input: File): AudioMetadata? {
         if (!input.exists()) return null
         val extractor = MediaExtractor()
@@ -29,8 +28,6 @@ object AudioHelper {
             val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
             val channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
             val duration = if (format.containsKey(MediaFormat.KEY_DURATION)) format.getLong(MediaFormat.KEY_DURATION) / 1000 else 0L
-            
-            // Total samples (Données PCM brutes) = Durée * Taux * Canaux
             val totalSamples = (duration * sampleRate * channels) / 1000
             
             AudioMetadata(sampleRate, channels, duration, totalSamples)
@@ -42,46 +39,30 @@ object AudioHelper {
         }
     }
 
-    // Sauvegarde avec coupes (Support Stéréo)
-    fun saveWithCuts(input: File, output: File, cutRanges: List<Pair<Long, Long>>): Boolean {
-        val sortedCuts = cutRanges.sortedBy { it.first }
-        return runTranscode(input, output) { sampleIndex, sampleValue ->
-            var shouldKeep = true
-            for (range in sortedCuts) {
-                if (sampleIndex >= range.first && sampleIndex < range.second) {
-                    shouldKeep = false
-                    break
-                }
-                if (sampleIndex < range.first) break 
-            }
-            if (shouldKeep) sampleValue else null
-        }
-    }
-
-    fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
-        return runTranscode(input, output) { sampleIndex, sampleValue ->
-            if (sampleIndex in startSample until endSample) null else sampleValue 
-        }
-    }
-
-    fun normalizeAudio(inputFile: File, outputFile: File, startMs: Long, endMs: Long, sampleRate: Int, targetPeak: Float, onProgress: (Float)->Unit): Boolean {
+    /**
+     * SCAN RAPIDE : Trouve le volume max sans écrire de fichier.
+     */
+    fun calculatePeak(inputFile: File): Float {
         var maxPeakFound = 0f
         val extractor = MediaExtractor()
+        var decoder: MediaCodec? = null
         try {
             extractor.setDataSource(inputFile.absolutePath)
             val trackIdx = selectAudioTrack(extractor)
-            if (trackIdx < 0) return false
+            if (trackIdx < 0) return 0f
             extractor.selectTrack(trackIdx)
             val format = extractor.getTrackFormat(trackIdx)
-            val mime = format.getString(MediaFormat.KEY_MIME) ?: return false
-            val decoder = MediaCodec.createDecoderByType(mime)
+            val mime = format.getString(MediaFormat.KEY_MIME) ?: return 0f
+            
+            decoder = MediaCodec.createDecoderByType(mime)
             decoder.configure(format, null, null, 0)
             decoder.start()
 
             val bufferInfo = MediaCodec.BufferInfo()
             var isEOS = false
+            
             while (!isEOS) {
-                val inIdx = decoder.dequeueInputBuffer(1000)
+                val inIdx = decoder.dequeueInputBuffer(2000)
                 if (inIdx >= 0) {
                     val buf = decoder.getInputBuffer(inIdx)
                     val sz = extractor.readSampleData(buf!!, 0)
@@ -93,44 +74,76 @@ object AudioHelper {
                         extractor.advance()
                     }
                 }
-                var outIdx = decoder.dequeueOutputBuffer(bufferInfo, 1000)
+                
+                var outIdx = decoder.dequeueOutputBuffer(bufferInfo, 2000)
                 while (outIdx >= 0) {
                     val outBuf = decoder.getOutputBuffer(outIdx)
                     if (outBuf != null && bufferInfo.size > 0) {
                         val shorts = outBuf.asShortBuffer()
-                        while (shorts.hasRemaining()) {
-                            val sample = abs(shorts.get().toFloat() / 32768f)
+                        // On scanne par saut de 10 pour aller plus vite (suffisant pour le peak)
+                        var i = 0
+                        while (i < shorts.remaining()) {
+                            val sample = abs(shorts.get(i).toFloat() / 32768f)
                             if (sample > maxPeakFound) maxPeakFound = sample
+                            i += 10 
                         }
                     }
                     decoder.releaseOutputBuffer(outIdx, false)
-                    outIdx = decoder.dequeueOutputBuffer(bufferInfo, 1000)
+                    outIdx = decoder.dequeueOutputBuffer(bufferInfo, 2000)
                 }
             }
-            decoder.stop(); decoder.release()
-        } catch (e: Exception) { return false } 
-        finally { extractor.release() }
-
-        if (maxPeakFound < 0.01f) return false
-        val gain = targetPeak / maxPeakFound
-        if (gain <= 1.0f && gain >= 0.99f) return true 
-
-        onProgress(0.5f)
-
-        return runTranscode(inputFile, outputFile) { _, sampleValue ->
-            val newVal = (sampleValue * gain).toInt().coerceIn(-32768, 32767)
-            newVal.toShort()
+            return maxPeakFound
+        } catch (e: Exception) { 
+            return 0f 
+        } finally {
+            try { decoder?.stop(); decoder?.release() } catch(e:Exception){}
+            extractor.release()
         }
     }
 
-    // Fusion des fichiers (Support Stéréo : Utilise le format du 1er fichier)
+    /**
+     * SAUVEGARDE FINALE : Applique Coupes + Gain en 1 seule passe.
+     */
+    fun saveWithCutsAndGain(input: File, output: File, cutRanges: List<Pair<Long, Long>>, gain: Float): Boolean {
+        val sortedCuts = cutRanges.sortedBy { it.first }
+        val applyGain = gain > 1.01f || gain < 0.99f
+        
+        return runTranscode(input, output) { sampleIndex, sampleValue ->
+            // 1. Gestion des Coupes
+            var shouldKeep = true
+            for (range in sortedCuts) {
+                if (sampleIndex >= range.first && sampleIndex < range.second) {
+                    shouldKeep = false
+                    break
+                }
+                if (sampleIndex < range.first) break 
+            }
+            
+            if (!shouldKeep) {
+                null
+            } else {
+                // 2. Gestion du Volume (Normalisation)
+                if (applyGain) {
+                    (sampleValue * gain).toInt().coerceIn(-32768, 32767).toShort()
+                } else {
+                    sampleValue
+                }
+            }
+        }
+    }
+
+    // --- Fonctions inchangées (Merge, Transcode, etc.) ---
+    
+    fun deleteRegionStreaming(input: File, output: File, startSample: Int, endSample: Int): Boolean {
+        return runTranscode(input, output) { sampleIndex, sampleValue ->
+            if (sampleIndex in startSample until endSample) null else sampleValue 
+        }
+    }
+
     fun mergeFiles(inputs: List<File>, output: File): Boolean {
         if (inputs.isEmpty()) return false
-        
-        // 1. Scanner le premier fichier pour déterminer le format (Mono/Stéréo)
         var sampleRate = 44100
         var channels = 1
-        
         val scanEx = MediaExtractor()
         try {
             scanEx.setDataSource(inputs[0].absolutePath)
@@ -163,7 +176,6 @@ object AudioHelper {
                 extractor.setDataSource(input.absolutePath)
                 val trackIdx = selectAudioTrack(extractor)
                 if (trackIdx < 0) { extractor.release(); continue }
-                
                 extractor.selectTrack(trackIdx)
                 val decFormat = extractor.getTrackFormat(trackIdx)
                 val decoder = MediaCodec.createDecoderByType(decFormat.getString(MediaFormat.KEY_MIME)!!)
@@ -172,7 +184,6 @@ object AudioHelper {
 
                 val bufferInfo = MediaCodec.BufferInfo()
                 var isEOS = false
-                
                 while (!isEOS) {
                     val inIdx = decoder.dequeueInputBuffer(2000)
                     if (inIdx >= 0) {
@@ -186,7 +197,6 @@ object AudioHelper {
                             extractor.advance()
                         }
                     }
-
                     var outIdx = decoder.dequeueOutputBuffer(bufferInfo, 2000)
                     while (outIdx >= 0) {
                         val outBuf = decoder.getOutputBuffer(outIdx)
@@ -199,7 +209,6 @@ object AudioHelper {
                         decoder.releaseOutputBuffer(outIdx, false)
                         outIdx = decoder.dequeueOutputBuffer(bufferInfo, 2000)
                     }
-                    
                     var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
                     while (encOutIdx >= 0 || encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                         if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -222,10 +231,8 @@ object AudioHelper {
                 }
                 decoder.stop(); decoder.release(); extractor.release()
             }
-            
             val inIdx = encoder.dequeueInputBuffer(2000)
             if (inIdx >= 0) encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
-            
             var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
             while (encOutIdx >= 0) {
                 if (encOutIdx >= 0) {
@@ -250,7 +257,6 @@ object AudioHelper {
         }
     }
 
-    // Moteur principal : Détecte et respecte le Stéréo/Mono
     private fun runTranscode(input: File, output: File, process: (Long, Short) -> Short?): Boolean {
         var extractor: MediaExtractor? = null
         var decoder: MediaCodec? = null
@@ -266,8 +272,6 @@ object AudioHelper {
             extractor.selectTrack(trackIdx)
             val format = extractor.getTrackFormat(trackIdx)
             val sampleRate = if (format.containsKey(MediaFormat.KEY_SAMPLE_RATE)) format.getInteger(MediaFormat.KEY_SAMPLE_RATE) else 44100
-            
-            // DÉTECTION DES CANAUX (Le fix est ICI)
             val channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
             
             val mime = format.getString(MediaFormat.KEY_MIME) ?: return false
@@ -275,7 +279,6 @@ object AudioHelper {
             decoder.configure(format, null, null, 0)
             decoder.start()
 
-            // Configuration encodeur avec le MEME nombre de canaux
             val encFormat = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channels)
             encFormat.setInteger(MediaFormat.KEY_BIT_RATE, BIT_RATE)
             encFormat.setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -309,7 +312,6 @@ object AudioHelper {
                         }
                     }
                 }
-
                 var outIdx = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                 while (outIdx >= 0) {
                     val outBuf = decoder.getOutputBuffer(outIdx)
@@ -317,16 +319,13 @@ object AudioHelper {
                         val chunkBytes = ByteArray(bufferInfo.size)
                         outBuf.position(bufferInfo.offset)
                         outBuf.get(chunkBytes)
-                        
                         val shortBuffer = ByteBuffer.wrap(chunkBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
                         val processedStream = java.io.ByteArrayOutputStream()
                         val tempShortBuf = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN)
-
                         while (shortBuffer.hasRemaining()) {
                             val sample = shortBuffer.get()
                             val newSample = process(totalSamplesProcessed, sample)
                             totalSamplesProcessed++
-                            
                             if (newSample != null) {
                                 tempShortBuf.clear()
                                 tempShortBuf.putShort(newSample)
@@ -344,7 +343,6 @@ object AudioHelper {
                     }
                     outIdx = decoder.dequeueOutputBuffer(bufferInfo, 1000)
                 }
-                
                 var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, 1000)
                 while (encOutIdx >= 0 || encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                     if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
