@@ -120,20 +120,56 @@ object AudioHelper {
                     if (outBuf != null && info.size > 0) {
                         outBuf.order(ByteOrder.LITTLE_ENDIAN)
                         val shorts = outBuf.asShortBuffer()
+                        
+                        // --- OPTIMISATION : SAUT D'ÉCHANTILLONS ---
+                        // Au lieu de lire TOUS les samples, on en lit 1 sur 8 si le fichier est long
+                        // Cela réduit drastiquement les calculs CPU
+                        val step = if (accurateDuration > 300_000) 8 else 1 
+                        
                         while (shorts.hasRemaining()) {
                             val sample = abs(shorts.get().toFloat() / 32768f)
                             if (sample > maxPeak) maxPeak = sample
-                            count++
+                            count += step
+                            
+                            // On avance manuellement dans le buffer pour sauter les samples inutiles
+                            if (step > 1 && shorts.hasRemaining()) {
+                                val nextPos = (shorts.position() + step - 1).coerceAtMost(shorts.limit())
+                                shorts.position(nextPos)
+                            }
+
                             if (count >= samplesPerPoint) {
                                 tempBuf.add(maxPeak.coerceAtMost(1.0f))
-                                maxPeak = 0f; count = 0
-                                if (tempBuf.size >= 200) { onUpdate(tempBuf.toFloatArray()); tempBuf.clear() }
+                                maxPeak = 0f
+                                count = 0
+                                if (tempBuf.size >= 200) {
+                                    onUpdate(tempBuf.toFloatArray())
+                                    tempBuf.clear()
+                                }
                             }
                         }
                     }
                     decoder.releaseOutputBuffer(outIdx, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER && isEOS) break
+                }
+
+                // if (outIdx >= 0) {
+                //     val outBuf = decoder.getOutputBuffer(outIdx)
+                //     if (outBuf != null && info.size > 0) {
+                //         outBuf.order(ByteOrder.LITTLE_ENDIAN)
+                //         val shorts = outBuf.asShortBuffer()
+                //         while (shorts.hasRemaining()) {
+                //             val sample = abs(shorts.get().toFloat() / 32768f)
+                //             if (sample > maxPeak) maxPeak = sample
+                //             count++
+                //             if (count >= samplesPerPoint) {
+                //                 tempBuf.add(maxPeak.coerceAtMost(1.0f))
+                //                 maxPeak = 0f; count = 0
+                //                 if (tempBuf.size >= 200) { onUpdate(tempBuf.toFloatArray()); tempBuf.clear() }
+                //             }
+                //         }
+                //     }
+                //     decoder.releaseOutputBuffer(outIdx, false)
+                //     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                // } else if (outIdx == MediaCodec.INFO_TRY_AGAIN_LATER && isEOS) break
             }
             if (tempBuf.isNotEmpty()) onUpdate(tempBuf.toFloatArray())
             decoder.stop(); decoder.release()
@@ -146,6 +182,8 @@ object AudioHelper {
      */
     fun decodeToPCM(input: File): AudioContent {
         val meta = getAudioMetadata(input) ?: return AudioContent(ShortArray(0), 44100, 1)
+        if (meta.duration > 5400_000) { /* Optionnel : limiter ici */ }
+
         val extractor = MediaExtractor()
         
         try {
@@ -170,7 +208,8 @@ object AudioHelper {
 
             val info = MediaCodec.BufferInfo()
             var isEOS = false
-            
+            val currentChannels = meta.channelCount
+
             while (true) {
                 if (!isEOS) {
                     val inIdx = codec.dequeueInputBuffer(5000)
@@ -188,29 +227,39 @@ object AudioHelper {
                 }
 
                 val outIdx = codec.dequeueOutputBuffer(info, 5000)
-                if (outIdx >= 0) {
-                    val outBuf = codec.getOutputBuffer(outIdx)
-                    if (outBuf != null && info.size > 0) {
-                        val samplesInChunk = info.size / 2
-                        // On vérifie qu'on ne dépasse pas le tableau (sécurité)
-                        if (writeOffset + samplesInChunk <= finalPcm.size) {
-                            outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(finalPcm, writeOffset, samplesInChunk)
-                            writeOffset += samplesInChunk
-                        }
+                        if (outIdx >= 0) {
+                            val outBuf = codec.getOutputBuffer(outIdx)
+                            if (outBuf != null && info.size > 0) {
+                                outBuf.order(ByteOrder.LITTLE_ENDIAN)
+                                val shorts = outBuf.asShortBuffer()
+                                
+                                while (shorts.hasRemaining()) {
+                                    if (currentChannels == 2) {
+                                        // MIXAGE STÉRÉO -> MONO (Moyenne des deux canaux)
+                                        val left = shorts.get().toInt()
+                                        val right = if (shorts.hasRemaining()) shorts.get().toInt() else left
+                                        val mono = ((left + right) / 2).toShort()
+                                        if (writeOffset < finalPcm.size) finalPcm[writeOffset++] = mono
+                                    } else {
+                                        // DÉJÀ MONO
+                                        if (writeOffset < finalPcm.size) finalPcm[writeOffset++] = shorts.get()
+                                    }
+                                }
+                            }
+                            codec.releaseOutputBuffer(outIdx, false)
+                            if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                        } else if (isEOS && outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) break
                     }
-                    codec.releaseOutputBuffer(outIdx, false)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                } else if (isEOS && outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) break
-            }
+            
             codec.stop(); codec.release(); extractor.release()
 
             // On retourne la partie réellement écrite (au cas où la durée estimée était un peu trop large)
-            return AudioContent(finalPcm.copyOfRange(0, writeOffset), meta.sampleRate, meta.channelCount)
+            return AudioContent(finalPcm.copyOfRange(0, writeOffset), meta.sampleRate, 1)
         } catch (e: Exception) { 
             return AudioContent(ShortArray(0), 44100, 1) 
         }
     }
-    
+
     /**
      * Génère l'onde à partir du PCM chargé en mémoire (Synchronisation parfaite)
      */
