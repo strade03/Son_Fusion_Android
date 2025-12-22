@@ -28,6 +28,8 @@ class EditorActivity : AppCompatActivity() {
     private var isPcmReady = false
     private var sampleRate = 44100
 
+    private var currentChannels = 1
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityEditorBinding.inflate(layoutInflater)
@@ -74,8 +76,8 @@ class EditorActivity : AppCompatActivity() {
                 }
             }.setNegativeButton("Non", null).show()
         }
-        // updateEditButtons(false)        
-        // loadEditorData()
+        updateEditButtons(false)        
+        loadEditorData()
     }
 
     private fun updateEditButtons(enabled: Boolean) {
@@ -112,11 +114,10 @@ class EditorActivity : AppCompatActivity() {
             val content = AudioHelper.decodeToPCM(currentFile)
             workingPcm = content.data
             sampleRate = content.sampleRate
+            currentChannels = content.channelCount // On mémorise le nombre de canaux
             
             withContext(Dispatchers.Main) {
                 updateEditButtons(true)
-                // Optionnel : On peut faire vibrer légèrement pour dire "Prêt pour l'édition"
-                Toast.makeText(this@EditorActivity, "Édition prête", Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -259,8 +260,8 @@ class EditorActivity : AppCompatActivity() {
 
         stopAudio()
         
-        // Calcul physique immédiat
-        val samplesPerPoint = sampleRate / AudioHelper.POINTS_PER_SECOND
+        // CALCUL PRÉCIS AVEC CANAUX
+        val samplesPerPoint = (sampleRate * currentChannels) / AudioHelper.POINTS_PER_SECOND
         val startS = startIdx * samplesPerPoint
         val endS = (endIdx * samplesPerPoint).coerceAtMost(pcm.size)
         
@@ -270,18 +271,20 @@ class EditorActivity : AppCompatActivity() {
         
         workingPcm = newPcm
         
-        // Mise à jour visuelle instantanée
-        refreshWaveformFromPcm(newPcm)
+        // Rafraîchir l'onde en passant le nouvel AudioContent
+        val newContent = AudioContent(newPcm, sampleRate, currentChannels)
+        refreshWaveformFromPcm(newContent)
     }
-    private fun refreshWaveformFromPcm(pcm: ShortArray) {
+
+    private fun refreshWaveformFromPcm(content: AudioContent) {
         lifecycleScope.launch(Dispatchers.Default) {
-            val newWaveform = AudioHelper.generateWaveformFromPCM(pcm, sampleRate)
+            val newWaveform = AudioHelper.generateWaveformFromPCM(content)
             withContext(Dispatchers.Main) {
                 binding.waveformView.clearData()
                 binding.waveformView.appendData(newWaveform)
-                // Update durée
-                val newMs = (pcm.size * 1000L) / sampleRate
-                binding.txtDuration.text = formatTime(newMs)
+                // Calcul de la durée : NbSamples / (Rate * Canaux)
+                val durationMs = (content.data.size * 1000L) / (sampleRate * currentChannels)
+                binding.txtDuration.text = formatTime(durationMs)
             }
         }
     }

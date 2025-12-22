@@ -16,7 +16,8 @@ data class AudioMetadata(
 
 data class AudioContent(
     val data: ShortArray,
-    val sampleRate: Int
+    val sampleRate: Int,
+    val channelCount: Int 
 )
 
 object AudioHelper {
@@ -308,47 +309,95 @@ object AudioHelper {
         }
     }
 
-    fun generateWaveformFromPCM(pcmData: ShortArray, sampleRate: Int): FloatArray {
-        val samplesPerPoint = sampleRate / POINTS_PER_SECOND
-        if (samplesPerPoint == 0) return floatArrayOf()
+    fun decodeToPCM(input: File): AudioContent {
+        val extractor = MediaExtractor()
+        try {
+            extractor.setDataSource(input.absolutePath)
+            var format = extractor.getTrackFormat(0) // Simplifié pour l'exemple
+            for (i in 0 until extractor.trackCount) {
+                val f = extractor.getTrackFormat(i)
+                if (f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/") == true) {
+                    format = f; extractor.selectTrack(i); break
+                }
+            }
+
+            val codec = MediaCodec.createDecoderByType(format.getString(MediaFormat.KEY_MIME)!!)
+            codec.configure(format, null, null, 0)
+            codec.start()
+
+            val info = MediaCodec.BufferInfo()
+            val baos = java.io.ByteArrayOutputStream()
+            var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+            var channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
+            
+            var isEOS = false
+            while (true) {
+                if (!isEOS) {
+                    val inIdx = codec.dequeueInputBuffer(5000)
+                    if (inIdx >= 0) {
+                        val buf = codec.getInputBuffer(inIdx)
+                        val sz = extractor.readSampleData(buf!!, 0)
+                        if (sz < 0) {
+                            codec.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
+                            isEOS = true
+                        } else {
+                            codec.queueInputBuffer(inIdx, 0, sz, extractor.sampleTime, 0)
+                            extractor.advance()
+                        }
+                    }
+                }
+
+                val outIdx = codec.dequeueOutputBuffer(info, 5000)
+                if (outIdx >= 0) {
+                    val outBuf = codec.getOutputBuffer(outIdx)
+                    if (outBuf != null && info.size > 0) {
+                        val chunk = ByteArray(info.size)
+                        outBuf.get(chunk)
+                        baos.write(chunk)
+                    }
+                    codec.releaseOutputBuffer(outIdx, false)
+                    if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
+                } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                    sampleRate = codec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    channels = codec.outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
+                } else if (isEOS && outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) break
+            }
+            codec.release(); extractor.release()
+
+            val fullBytes = baos.toByteArray()
+            val shorts = ShortArray(fullBytes.size / 2)
+            java.nio.ByteBuffer.wrap(fullBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
+            
+            return AudioContent(shorts, sampleRate, channels)
+        } catch (e: Exception) { return AudioContent(ShortArray(0), 44100, 1) }
+    }
+
+    // --- GÉNÉRATEUR D'ONDE ---
+    fun generateWaveformFromPCM(content: AudioContent): FloatArray {
+        // C'est ici que la magie opère : samplesParPoint doit tenir compte des canaux !
+        // Si Stéréo, il y a 2 samples (L+R) pour chaque instant T.
+        val samplesPerPoint = (content.sampleRate * content.channelCount) / POINTS_PER_SECOND
+        if (samplesPerPoint <= 0) return floatArrayOf()
         
-        val pointCount = pcmData.size / samplesPerPoint
+        val pointCount = content.data.size / samplesPerPoint
         val waveform = FloatArray(pointCount)
         
         for (i in 0 until pointCount) {
             var max = 0f
-            // On regarde le pic sur les 20ms de son
+            val start = i * samplesPerPoint
+            // On cherche le pic sur les N samples (L+R mixés visuellement)
             for (j in 0 until samplesPerPoint) {
-                val idx = i * samplesPerPoint + j
-                if (idx >= pcmData.size) break
-                val sample = abs(pcmData[idx].toFloat() / 32768f)
+                val sample = abs(content.data[start + j].toFloat() / 32768f)
                 if (sample > max) max = sample
             }
             waveform[i] = max.coerceAtMost(1.0f)
         }
         return waveform
     }
-    
-    fun decodeToPCM(input: File): AudioContent {
-        if (!input.exists()) return AudioContent(ShortArray(0), 44100)
-        val ex = MediaExtractor(); try{ex.setDataSource(input.absolutePath)}catch(e:Exception){return AudioContent(ShortArray(0),44100)}
-        var idx=-1; var fmt:MediaFormat?=null; for(i in 0 until ex.trackCount){val f=ex.getTrackFormat(i);if(f.getString(MediaFormat.KEY_MIME)?.startsWith("audio/")==true){idx=i;fmt=f;break}}
-        if(idx<0)return AudioContent(ShortArray(0),44100); ex.selectTrack(idx)
-        val dec = MediaCodec.createDecoderByType(fmt!!.getString(MediaFormat.KEY_MIME)!!); dec.configure(fmt,null,null,0); dec.start()
-        val info=MediaCodec.BufferInfo(); val baos=java.io.ByteArrayOutputStream(); var rate=44100; var eos=false
-        while(true){
-            if(!eos){val i=dec.dequeueInputBuffer(1000);if(i>=0){val b=dec.getInputBuffer(i);val s=ex.readSampleData(b!!,0);if(s<0){dec.queueInputBuffer(i,0,0,0,MediaCodec.BUFFER_FLAG_END_OF_STREAM);eos=true}else{dec.queueInputBuffer(i,0,s,ex.sampleTime,0);ex.advance()}}}
-            val o=dec.dequeueOutputBuffer(info,1000); if(o==MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) rate=dec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            if(o>=0){val b=dec.getOutputBuffer(o);if(b!=null&&info.size>0){val c=ByteArray(info.size);b.get(c);baos.write(c)};dec.releaseOutputBuffer(o,false);if(info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM!=0)break}
-            else if(o==MediaCodec.INFO_TRY_AGAIN_LATER&&eos)break
-        }
-        dec.release();ex.release(); val by=baos.toByteArray(); val sh=ShortArray(by.size/2); ByteBuffer.wrap(by).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(sh)
-        return AudioContent(sh, rate)
-    }
 
     fun savePCMToAAC(pcmData: ShortArray, outputFile: File, sampleRate: Int): Boolean {
         var enc:MediaCodec?=null; var mux:MediaMuxer?=null; try{
-            val fmt=MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC,sampleRate,1)
+            val fmt = MediaFormat.createAudioFormat(MediaFormat.MIMETYPE_AUDIO_AAC, sampleRate, channelCount)
             fmt.setInteger(MediaFormat.KEY_BIT_RATE,BIT_RATE); fmt.setInteger(MediaFormat.KEY_AAC_PROFILE,MediaCodecInfo.CodecProfileLevel.AACObjectLC); fmt.setInteger(MediaFormat.KEY_MAX_INPUT_SIZE,16384)
             enc=MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_AUDIO_AAC); enc.configure(fmt,null,null,MediaCodec.CONFIGURE_FLAG_ENCODE); enc.start()
             mux=MediaMuxer(outputFile.absolutePath,MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4); var tr=-1; var st=false; val info=MediaCodec.BufferInfo()
