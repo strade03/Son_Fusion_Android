@@ -145,7 +145,9 @@ object AudioHelper {
      * Décode tout le fichier en mémoire. Indispensable pour une édition fluide.
      */
     fun decodeToPCM(input: File): AudioContent {
+        val meta = getAudioMetadata(input) ?: return AudioContent(ShortArray(0), 44100, 1)
         val extractor = MediaExtractor()
+        
         try {
             extractor.setDataSource(input.absolutePath)
             var format: MediaFormat? = null
@@ -161,12 +163,14 @@ object AudioHelper {
             codec.configure(format, null, null, 0)
             codec.start()
 
+            // PRÉ-ALLOCATION : On connaît la taille grâce aux métadonnées (durée * sampleRate * channels)
+            val totalExpectedSamples = ((meta.duration * meta.sampleRate * meta.channelCount) / 1000).toInt()
+            val finalPcm = ShortArray(totalExpectedSamples)
+            var writeOffset = 0
+
             val info = MediaCodec.BufferInfo()
-            val baos = java.io.ByteArrayOutputStream()
-            var sampleRate = format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-            var channels = if (format.containsKey(MediaFormat.KEY_CHANNEL_COUNT)) format.getInteger(MediaFormat.KEY_CHANNEL_COUNT) else 1
-            
             var isEOS = false
+            
             while (true) {
                 if (!isEOS) {
                     val inIdx = codec.dequeueInputBuffer(5000)
@@ -187,27 +191,26 @@ object AudioHelper {
                 if (outIdx >= 0) {
                     val outBuf = codec.getOutputBuffer(outIdx)
                     if (outBuf != null && info.size > 0) {
-                        val chunk = ByteArray(info.size)
-                        outBuf.get(chunk)
-                        baos.write(chunk)
+                        val samplesInChunk = info.size / 2
+                        // On vérifie qu'on ne dépasse pas le tableau (sécurité)
+                        if (writeOffset + samplesInChunk <= finalPcm.size) {
+                            outBuf.order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(finalPcm, writeOffset, samplesInChunk)
+                            writeOffset += samplesInChunk
+                        }
                     }
                     codec.releaseOutputBuffer(outIdx, false)
                     if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) break
-                } else if (outIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
-                    sampleRate = codec.outputFormat.getInteger(MediaFormat.KEY_SAMPLE_RATE)
-                    channels = codec.outputFormat.getInteger(MediaFormat.KEY_CHANNEL_COUNT)
                 } else if (isEOS && outIdx == MediaCodec.INFO_TRY_AGAIN_LATER) break
             }
             codec.stop(); codec.release(); extractor.release()
 
-            val fullBytes = baos.toByteArray()
-            val shorts = ShortArray(fullBytes.size / 2)
-            ByteBuffer.wrap(fullBytes).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer().get(shorts)
-            
-            return AudioContent(shorts, sampleRate, channels)
-        } catch (e: Exception) { return AudioContent(ShortArray(0), 44100, 1) }
+            // On retourne la partie réellement écrite (au cas où la durée estimée était un peu trop large)
+            return AudioContent(finalPcm.copyOfRange(0, writeOffset), meta.sampleRate, meta.channelCount)
+        } catch (e: Exception) { 
+            return AudioContent(ShortArray(0), 44100, 1) 
+        }
     }
-
+    
     /**
      * Génère l'onde à partir du PCM chargé en mémoire (Synchronisation parfaite)
      */

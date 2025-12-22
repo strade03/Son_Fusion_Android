@@ -30,6 +30,7 @@ class EditorActivity : AppCompatActivity() {
 
     private var audioTrack: AudioTrack? = null
     private var isPlaying = false  
+    private var backupPlayer: MediaPlayer? = null 
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -148,6 +149,46 @@ class EditorActivity : AppCompatActivity() {
     }
 
     private fun playAudio() {
+        // SI LE PCM EST PRÊT : Lecture AudioTrack (Mémoire, instantané pour les coupes)
+        if (isPcmReady && workingPcm != null) {
+            playAudioTrack()
+        } 
+        // SI LE PCM N'EST PAS ENCORE PRÊT : Lecture MediaPlayer (Fichier disque)
+        else {
+            playBackupMediaPlayer()
+        }
+    }
+
+    private fun playBackupMediaPlayer() {
+        stopAudio()
+        try {
+            backupPlayer = MediaPlayer().apply {
+                setDataSource(currentFile.absolutePath)
+                prepare()
+                val startMs = (binding.waveformView.playheadPos * 1000L) / AudioHelper.POINTS_PER_SECOND
+                seekTo(startMs.toInt())
+                start()
+                setOnCompletionListener { stopAudio() }
+            }
+            isPlaying = true
+            binding.btnPlay.setImageResource(R.drawable.ic_stop_read)
+            
+            playbackJob = lifecycleScope.launch {
+                while (backupPlayer?.isPlaying == true) {
+                    val currentMs = backupPlayer?.currentPosition?.toLong() ?: 0L
+                    val currentIndex = ((currentMs * AudioHelper.POINTS_PER_SECOND) / 1000).toInt()
+                    binding.waveformView.playheadPos = currentIndex
+                    binding.waveformView.invalidate()
+                    runOnUiThread { updateCurrentTimeDisplay(currentIndex) }
+                    delay(100)
+                }
+            }
+        } catch (e: Exception) {
+            Toast.makeText(this, "Chargement en cours...", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun playAudioTrack() {
         val pcm = workingPcm ?: return
         if (isPlaying) { stopAudio(); return }
 
@@ -232,13 +273,21 @@ class EditorActivity : AppCompatActivity() {
     private fun stopAudio() {
         isPlaying = false
         playbackJob?.cancel()
+        
+        // Stop AudioTrack
         try {
-            audioTrack?.pause()
-            audioTrack?.flush()
             audioTrack?.stop()
             audioTrack?.release()
         } catch (e: Exception) {}
         audioTrack = null
+
+        // Stop MediaPlayer
+        try {
+            backupPlayer?.stop()
+            backupPlayer?.release()
+        } catch (e: Exception) {}
+        backupPlayer = null
+
         binding.btnPlay.setImageResource(R.drawable.ic_play)
     }
 
