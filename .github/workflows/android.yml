@@ -2,9 +2,9 @@ name: Android Build
 
 on:
   push:
-    branches: [ "master","evolution-GEMINI","evolution-CLAUDE" ]
+    branches: [ "master","evolution-optimisation","evolution-CLAUDE" ]
   pull_request:
-    branches: [ "master","evolution-GEMINI","evolution-CLAUDE" ]
+    branches: [ "master","evolution-optimisation","evolution-CLAUDE" ]
 
 jobs:
   build:
