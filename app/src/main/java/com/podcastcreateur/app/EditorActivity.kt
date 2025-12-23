@@ -127,7 +127,6 @@ class EditorActivity : AppCompatActivity() {
                 
                 if (amplitudes.isNotEmpty() && totalDurationMs > 0) {
                     msPerPoint = totalDurationMs.toDouble() / amplitudes.size.toDouble()
-                }
                 } else {
                     // Cas désespéré : on met une valeur par défaut pour éviter crash division par 0
                     msPerPoint = 100.0 
