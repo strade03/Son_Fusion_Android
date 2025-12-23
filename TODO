@@ -1,6 +1,9 @@
 BUGS 
-=> Sur fichier 1 min c'est OK coupe et chargement
-=> 15 min plantage => pas de lecture possible dès le début !
+
+=> coupe ok visuellement et lecture  mais il st perdu avec le pointeur si on coupe 10 à 15 si on clique sur 18 il pensera etre en 13 donc lira dans la coupe !
+=> mesage d'erreur de chargement non pertinent !
+=> voir comment optimiser normalisation
+
 
 
 

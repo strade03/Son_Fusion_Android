@@ -4,11 +4,14 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
+import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import com.podcastcreateur.app.databinding.ActivityRecorderBinding
 import java.io.File
 
@@ -40,22 +43,53 @@ class RecorderActivity : AppCompatActivity() {
         outputFile = File(projectPath, "$prefix$name.m4a")
 
         binding.btnRecordToggle.setOnClickListener {
-            if (isRecording) stopRecording() else startRecording()
+            if (isRecording) stopRecording() else checkPermissionsAndStart()
+        }
+    }
+
+    private fun checkPermissionsAndStart() {
+        val requiredPermissions = mutableListOf(Manifest.permission.RECORD_AUDIO)
+        
+        if (Build.VERSION.SDK_INT <= 32) {
+            requiredPermissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            requiredPermissions.add(Manifest.permission.READ_MEDIA_AUDIO)
+        }
+
+        val missing = requiredPermissions.filter { 
+            ContextCompat.checkSelfPermission(this, it) != PackageManager.PERMISSION_GRANTED 
+        }
+
+        if (missing.isEmpty()) {
+            startRecording()
+        } else {
+            // Afficher Dialog explicatif
+            AlertDialog.Builder(this)
+                .setTitle(getString(R.string.permission_missing))
+                .setMessage("L'application a besoin de l'accès au micro et au stockage pour enregistrer.")
+                .setPositiveButton("OK") { _, _ ->
+                    ActivityCompat.requestPermissions(this, missing.toTypedArray(), 100)
+                }
+                .setNegativeButton("Annuler", null)
+                .show()
+        }
+    }
+
+    // Callback permission optionnel, mais géré ici pour relancer si accepté
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 100 && grantResults.all { it == PackageManager.PERMISSION_GRANTED }) {
+            startRecording()
         }
     }
 
     private fun startRecording() {
-        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            Toast.makeText(this, getString(R.string.permission_missing), Toast.LENGTH_SHORT).show()
-            return
-        }
-
         mediaRecorder = MediaRecorder().apply {
             setAudioSource(MediaRecorder.AudioSource.MIC)
             setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-            setAudioEncodingBitRate(128000)
-            setAudioSamplingRate(44100)
+            setAudioEncodingBitRate(Constants.BIT_RATE)
+            setAudioSamplingRate(Constants.SAMPLE_RATE)
             setOutputFile(outputFile.absolutePath)
             try {
                 prepare()
@@ -64,7 +98,10 @@ class RecorderActivity : AppCompatActivity() {
                 binding.btnRecordToggle.setImageResource(R.drawable.ic_stop)
                 binding.chronometer.base = SystemClock.elapsedRealtime()
                 binding.chronometer.start()
-            } catch (e: Exception) { e.printStackTrace() }
+            } catch (e: Exception) { 
+                e.printStackTrace()
+                Toast.makeText(this@RecorderActivity, "Erreur initialisation micro", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 

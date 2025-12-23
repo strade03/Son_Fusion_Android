@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
@@ -25,11 +26,11 @@ class WaveformView @JvmOverloads constructor(
     
     var onPositionChanged: ((Int) -> Unit)? = null
   
-    private val paint = Paint().apply {
+    private val wavePaint = Paint().apply {
         color = Color.parseColor("#3F51B5")
         strokeWidth = 2f
         style = Paint.Style.STROKE
-        isAntiAlias = false 
+        isAntiAlias = false // Désactivé pour la perf sur les lignes droites
     }
 
     private val outOfBoundsPaint = Paint().apply {
@@ -53,13 +54,12 @@ class WaveformView @JvmOverloads constructor(
     }
 
     private var isDraggingSelection = false
+    private val wavePath = Path() // Réutilisation du Path
     
     private val gestureDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true 
 
         override fun onSingleTapUp(e: MotionEvent): Boolean {
-            // Clic simple : on place le curseur, on annule la sélection
-            // On clamp pour ne pas cliquer hors limites
             val idx = pixelToIndex(e.x).coerceIn(0, (points.size - 1).coerceAtLeast(0))
             playheadPos = idx
             selectionStart = -1
@@ -71,7 +71,6 @@ class WaveformView @JvmOverloads constructor(
 
         override fun onLongPress(e: MotionEvent) {
             isDraggingSelection = true
-            // Début de sélection : On clamp immédiatement
             val s = pixelToIndex(e.x).coerceIn(0, (points.size - 1).coerceAtLeast(0))
             selectionStart = s
             selectionEnd = s
@@ -122,7 +121,7 @@ class WaveformView @JvmOverloads constructor(
     }
     
     fun setZoomLevel(factor: Float) {
-        zoomFactor = factor
+        zoomFactor = factor.coerceIn(Constants.MIN_ZOOM, Constants.MAX_ZOOM)
         requestLayout()
         invalidate()
     }
@@ -152,23 +151,32 @@ class WaveformView @JvmOverloads constructor(
         // 2. Ligne centrale
         canvas.drawLine(0f, centerY, width.toFloat(), centerY, centerLinePaint)
 
-        // 3. Onde (Optimisée par clipBounds)
+        // 3. Onde (OPTIMISATION PATH + CLIP)
         val clipBounds = canvas.clipBounds
+        // On ne parcourt que les points visibles à l'écran
         val startIdx = pixelToIndex(clipBounds.left.toFloat()).coerceAtLeast(0)
         val endIdx = pixelToIndex(clipBounds.right.toFloat()).coerceAtMost(points.size - 1)
 
-        for (i in startIdx..endIdx) {
-            val x = i * zoomFactor
-            val valPeak = points[i] 
-            val barHeight = valPeak * centerY * 0.95f 
-            canvas.drawLine(x, centerY - barHeight, x, centerY + barHeight, paint)
+        if (startIdx <= endIdx && points.isNotEmpty()) {
+            wavePath.reset()
+            // Pour éviter les artefacts, on se déplace au premier point
+            val firstX = startIdx * zoomFactor
+            wavePath.moveTo(firstX, centerY)
+
+            for (i in startIdx..endIdx) {
+                val x = i * zoomFactor
+                val valPeak = points[i] 
+                val barHeight = valPeak * centerY * 0.95f 
+                
+                // On dessine une ligne verticale pour chaque point
+                wavePath.moveTo(x, centerY - barHeight)
+                wavePath.lineTo(x, centerY + barHeight)
+            }
+            canvas.drawPath(wavePath, wavePaint)
         }
 
-        // 4. SÉLECTION (CORRECTION GAUCHE/DROITE)
-        // On vérifie juste si start est défini. End peut être n'importe où.
+        // 4. SÉLECTION
         if (selectionStart >= 0) {
-            // On calcule le min et le max pour dessiner le rectangle correctement
-            // peu importe si on tire vers la gauche ou la droite
             val drawStart = min(selectionStart, selectionEnd)
             val drawEnd = max(selectionStart, selectionEnd)
             
@@ -199,12 +207,11 @@ class WaveformView @JvmOverloads constructor(
         when(event.action) {
             MotionEvent.ACTION_MOVE -> {
                 if (isDraggingSelection) {
-                    // CORRECTION LIMITES : On empêche d'aller au-delà de la fin
                     val maxIndex = (points.size - 1).coerceAtLeast(0)
                     val s = pixelToIndex(event.x).coerceIn(0, maxIndex)
                     
                     selectionEnd = s
-                    invalidate() // Redessine immédiatement (le onDraw gère gauche/droite)
+                    invalidate() 
                     return true
                 }
                 return false
@@ -213,13 +220,9 @@ class WaveformView @JvmOverloads constructor(
                 if (isDraggingSelection) {
                     isDraggingSelection = false
                     parent?.requestDisallowInterceptTouchEvent(false)
-                    
-                    // Une fois lâché, on remet start < end pour la logique métier
                     if(selectionStart > selectionEnd) {
                         val t = selectionStart; selectionStart = selectionEnd; selectionEnd = t
                     }
-                    
-                    // Si clic sur place (pas de sélection), on place le curseur
                     if (selectionStart == selectionEnd) {
                         selectionStart = -1
                         selectionEnd = -1
