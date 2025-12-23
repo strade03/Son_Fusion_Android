@@ -101,7 +101,8 @@ class EditorActivity : AppCompatActivity() {
             // --- CORRECTION RÉSOLUTION ---
             // On augmente drastiquement la résolution pour les fichiers courts
             val requestPps = when {
-                durationSec < 60 -> 1000  // < 1min : 1000 points/sec (Très haute résolution)
+                durationSec < 10 -> 5000
+                durationSec < 60 -> 2000  // < 1min : 2000 points/sec (Très haute résolution)
                 durationSec < 300 -> 400  // < 5min : 400 points/sec
                 durationSec < 900 -> 100  // < 15min : 100 points/sec
                 else -> 50 
