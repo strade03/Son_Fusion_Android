@@ -65,7 +65,6 @@ object AudioHelper {
             var isEOS = false
             
             while (!isEOS) {
-                // Timeout ajouté
                 val inIdx = decoder.dequeueInputBuffer(Constants.TIMEOUT_US)
                 if (inIdx >= 0) {
                     val buf = decoder.getInputBuffer(inIdx)
@@ -100,7 +99,6 @@ object AudioHelper {
             Log.e(TAG, "Error calculating peak", e)
             return 0f 
         } finally {
-            // Libération propre des ressources
             try { decoder?.stop() } catch(e:Exception){ Log.w(TAG, "Decoder stop failed", e) }
             try { decoder?.release() } catch(e:Exception){ Log.w(TAG, "Decoder release failed", e) }
             extractor.release()
@@ -138,7 +136,6 @@ object AudioHelper {
         var sampleRate = Constants.SAMPLE_RATE
         var channels = Constants.CHANNELS
         
-        // Scan initial pour le format (sécurisé)
         val scanEx = MediaExtractor()
         try {
             scanEx.setDataSource(inputs[0].absolutePath)
@@ -156,6 +153,8 @@ object AudioHelper {
 
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
+        // FIX: Déclaration déplacée ici, hors du try
+        var muxerStarted = false 
         
         try {
             val format = MediaFormat.createAudioFormat(Constants.MIME_TYPE_AUDIO, sampleRate, channels)
@@ -169,7 +168,7 @@ object AudioHelper {
 
             muxer = MediaMuxer(output.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             var muxerTrackIndex = -1
-            var muxerStarted = false 
+            
             val encBufferInfo = MediaCodec.BufferInfo()
 
             for (input in inputs) {
@@ -220,7 +219,6 @@ object AudioHelper {
                             outIdx = decoder.dequeueOutputBuffer(bufferInfo, Constants.TIMEOUT_US)
                         }
                         
-                        // Vidage de l'encodeur (Muxing)
                         var encOutIdx = encoder.dequeueOutputBuffer(encBufferInfo, Constants.TIMEOUT_US)
                         while (encOutIdx >= 0 || encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
                             if (encOutIdx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
@@ -248,7 +246,6 @@ object AudioHelper {
                 }
             }
             
-            // Fin de flux pour l'encodeur
             val inIdx = encoder.dequeueInputBuffer(Constants.TIMEOUT_US)
             if (inIdx >= 0) encoder.queueInputBuffer(inIdx, 0, 0, 0, MediaCodec.BUFFER_FLAG_END_OF_STREAM)
             
@@ -272,7 +269,8 @@ object AudioHelper {
             return false
         } finally {
             try { encoder?.stop(); encoder?.release() } catch (e:Exception){}
-            try { if (muxerStarted) muxer?.stop(); muxer?.release() } catch (e:Exception){}
+            // FIX: Ici muxerStarted est maintenant visible
+            try { if (muxer != null && muxerStarted) muxer.stop(); muxer?.release() } catch (e:Exception){}
         }
     }
 
@@ -281,6 +279,7 @@ object AudioHelper {
         var decoder: MediaCodec? = null
         var encoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
+        // FIX: Déclaration hors du try pour visibilité dans finally
         var muxerStarted = false 
         
         try {
@@ -392,6 +391,7 @@ object AudioHelper {
         } finally {
             try { decoder?.stop(); decoder?.release() } catch(e:Exception){}
             try { encoder?.stop(); encoder?.release() } catch(e:Exception){}
+            // FIX: muxerStarted est maintenant visible
             try { if (muxer != null && muxerStarted) muxer.stop(); muxer?.release() } catch(e:Exception){}
             try { extractor?.release() } catch(e:Exception){}
         }
